@@ -1,0 +1,284 @@
+# game_automation_example.yaml - Example game automation script
+# This demonstrates the YAML format for automating game testing
+
+game: "ExampleRPG"
+version: "1.0.0"
+description: "Automated smoke test for Example RPG game"
+
+# Application launch configuration
+launch:
+  executable: "C:\\Games\\ExampleRPG\\Game.exe"
+  working_directory: "C:\\Games\\ExampleRPG"
+  args:
+    - "-windowed"
+    - "-res 1920x1080"
+    - "-novid"  # Skip intro video
+  timeout: 60000  # 60 seconds to launch
+  wait_for_window: true
+  window_title: "ExampleRPG"
+  maximize: false
+  set_foreground: true
+
+# Game state definitions for detection
+states:
+  - name: loading
+    description: "Game is loading"
+    markers:
+      - image: "refs/loading_spinner.png"
+        threshold: 0.8
+      - text: "Loading..."
+    color_profile: "dark_blue"  # Dominant color
+    
+  - name: main_menu
+    description: "Main menu screen"
+    markers:
+      - image: "refs/main_menu_title.png"
+        threshold: 0.9
+      - text: "Press Any Key to Start"
+      - accessibility:
+          control_type: "Button"
+          name: "New Game"
+    
+  - name: pause_menu
+    description: "Game is paused"
+    markers:
+      - image: "refs/pause_overlay.png"
+      - text: "Resume Game"
+    
+  - name: gameplay
+    description: "Active gameplay"
+    markers:
+      - image: "refs/hud_health_bar.png"
+      - color: "#FF0000"  # Health bar color
+    stable_duration: 2000  # Must be stable for 2 seconds
+
+# Reference images directory
+references: "./refs/example_rpg"
+
+# Test automation sequence
+automation:
+  # Wait for game to reach main menu
+  - action: wait_for_state
+    state: main_menu
+    timeout: 120000
+    description: "Wait for main menu to load"
+    
+  # Click "New Game" button using accessibility
+  - action: click_element
+    by: accessibility
+    name: "New Game"
+    description: "Click New Game button"
+    retry: 3
+    
+  # Alternative: Click by template if accessibility fails
+  - action: click_element
+    by: template
+    template: "refs/new_game_button.png"
+    threshold: 0.8
+    description: "Click New Game button (backup method)"
+    continue_on_error: true  # Don't fail if accessibility worked
+    
+  # Wait for loading to complete
+  - action: wait_for_loading
+    timeout: 120000
+    description: "Wait for level to load"
+    
+  # Verify we're in gameplay
+  - action: assert_state
+    state: gameplay
+    timeout: 30000
+    description: "Verify gameplay started"
+    
+  # Take screenshot of initial state
+  - action: screenshot
+    name: "gameplay_start"
+    description: "Capture initial gameplay state"
+    
+  # Navigate using accessibility
+  - action: navigate_menu
+    path: ["Options", "Graphics", "Resolution"]
+    method: accessibility
+    description: "Open graphics settings"
+    
+  # Select 1080p resolution
+  - action: click_element
+    by: text
+    text: "1920 x 1080"
+    description: "Select 1080p resolution"
+    
+  # Apply settings
+  - action: click_element
+    by: accessibility
+    name: "Apply"
+    description: "Apply graphics settings"
+    
+  # Wait for settings to apply
+  - action: wait
+    duration_ms: 3000
+    
+  # Return to game
+  - action: key_press
+    key: "Escape"
+    description: "Close settings menu"
+    
+  # Play game for 30 seconds
+  - action: play_game
+    duration: 30000
+    description: "Test gameplay for 30 seconds"
+    inputs:
+      # WASD movement
+      movement:
+        pattern: "random_wasd"  # Random W/A/S/D presses
+        duration: 30000
+        interval_ms: 500
+      
+      # Mouse look around
+      camera:
+        enabled: true
+        pattern: "look_around"  # Look left/right
+        speed: "medium"
+      
+      # Occasional spacebar (jump)
+      actions:
+        - key: "Space"
+          frequency: 0.3  # 30% chance per interval
+          interval_ms: 2000
+        
+        - key: "Left Mouse"
+          frequency: 0.5
+          interval_ms: 1500
+    
+  # Take screenshot during gameplay
+  - action: screenshot
+    name: "gameplay_mid"
+    description: "Capture mid-gameplay state"
+    
+  # Open inventory
+  - action: key_press
+    key: "i"
+    description: "Open inventory"
+    
+  # Verify inventory UI appeared
+  - action: find_element
+    by: template
+    template: "refs/inventory_grid.png"
+    timeout: 5000
+    description: "Verify inventory opened"
+    
+  # Close inventory
+  - action: key_press
+    key: "i"
+    description: "Close inventory"
+    
+  # Pause game
+  - action: key_press
+    key: "Escape"
+    description: "Open pause menu"
+    
+  # Verify pause menu
+  - action: assert_state
+    state: pause_menu
+    timeout: 5000
+    description: "Verify pause menu opened"
+    
+  # Save game
+  - action: click_element
+    by: accessibility
+    name: "Save Game"
+    description: "Click Save Game"
+    
+  # Wait for save dialog
+  - action: wait_for_element
+    by: accessibility
+    control_type: "Edit"
+    timeout: 5000
+    description: "Wait for save dialog"
+    
+  # Type save name
+  - action: type
+    text: "AutoTest_Save"
+    interval_ms: 10
+    description: "Enter save name"
+    
+  # Confirm save
+  - action: click_element
+    by: accessibility
+    name: "Save"
+    description: "Confirm save"
+    
+  # Wait for save to complete
+  - action: wait_for_loading
+    timeout: 10000
+    description: "Wait for save to complete"
+    
+  # Resume game
+  - action: click_element
+    by: accessibility
+    name: "Resume Game"
+    description: "Resume gameplay"
+    
+  # Final gameplay check
+  - action: assert_state
+    state: gameplay
+    timeout: 10000
+    description: "Verify back in gameplay"
+    
+  # Final screenshot
+  - action: screenshot
+    name: "gameplay_end"
+    description: "Final gameplay capture"
+
+# Assertions to verify test success
+assertions:
+  - type: state_reached
+    state: gameplay
+    required: true
+    message: "Must reach gameplay state"
+    
+  - type: element_found
+    method: template
+    template: "refs/hud_health_bar.png"
+    timeout: 5000
+    required: true
+    message: "Health bar must be visible"
+    
+  - type: performance
+    metric: "avg_fps"
+    min_value: 30
+    required: true
+    message: "Game must maintain 30+ FPS"
+    
+  - type: no_crashes
+    required: true
+    message: "Game must not crash during test"
+
+# Cleanup/teardown
+teardown:
+  - action: key_combo
+    keys: ["Alt", "F4"]
+    description: "Close game"
+    continue_on_error: true  # Game might already be closed
+    
+  - action: wait
+    duration_ms: 5000
+    description: "Wait for game to close"
+    
+  - action: terminate_process
+    name: "ExampleRPG.exe"
+    description: "Force kill if still running"
+    continue_on_error: true
+
+# Test metadata
+metadata:
+  author: "QA Team"
+  category: "Smoke Test"
+  priority: "High"
+  estimated_duration: 180  # seconds
+  min_requirements:
+    resolution: "1920x1080"
+    gpu: "DirectX 11 compatible"
+  tags:
+    - "smoke"
+    - "ui"
+    - "gameplay"
+    - "save_load"
