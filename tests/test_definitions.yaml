@@ -1,0 +1,344 @@
+# test_definitions.yaml - YAML-based test definitions for KVM-Drivers
+# Defines automated tests for CI/CD execution
+
+version: "1.0"
+project: KVM-Drivers
+description: Automated test suite for virtual driver validation
+
+# Test suites
+test_suites:
+  - name: keyboard_input
+    description: Keyboard HID input validation
+    target: drivers/vhidkb
+    timeout: 60
+    tests:
+      - id: kb_001
+        name: Single Key Injection
+        description: Inject single alphanumeric key and verify HID report
+        type: ioctl
+        ioctl_code: IOCTL_VKB_INJECT_KEYDOWN
+        input:
+          key_code: 0x04  # 'a'
+          modifiers: 0
+        expected: success
+        
+      - id: kb_002
+        name: Modifier Combo
+        description: Test Ctrl+C combination
+        type: ioctl
+        ioctl_code: IOCTL_VKB_INJECT_KEYDOWN
+        input:
+          key_code: 0x06  # 'c'
+          modifiers: 0x01  # Left Ctrl
+        expected: success
+        
+      - id: kb_003
+        name: 6-Key Rollover
+        description: Test boot protocol 6-key limit
+        type: ioctl
+        ioctl_code: IOCTL_VKB_INJECT_KEYDOWN
+        input:
+          key_codes: [0x04, 0x05, 0x06, 0x07, 0x08, 0x09]  # a,b,c,d,e,f
+          modifiers: 0
+        expected: success
+        
+      - id: kb_004
+        name: Function Keys
+        description: Test F1-F12 injection
+        type: ioctl
+        ioctl_code: IOCTL_VKB_INJECT_KEYDOWN
+        input:
+          key_codes: [0x3A, 0x3B, 0x3C, 0x3D]  # F1-F4
+        expected: success
+        
+      - id: kb_005
+        name: Reset Command
+        description: Test keyboard reset
+        type: ioctl
+        ioctl_code: IOCTL_VKB_RESET
+        expected: success
+
+  - name: mouse_input
+    description: Mouse HID input validation
+    target: drivers/vhidmouse
+    timeout: 60
+    tests:
+      - id: mouse_001
+        name: Relative Movement
+        description: Move mouse relatively
+        type: ioctl
+        ioctl_code: IOCTL_VMOUSE_MOVE_RELATIVE
+        input:
+          x: 100
+          y: -50
+        expected: success
+        
+      - id: mouse_002
+        name: Absolute Movement
+        description: Move mouse to absolute position
+        type: ioctl
+        ioctl_code: IOCTL_VMOUSE_MOVE_ABSOLUTE
+        input:
+          x: 960
+          y: 540
+          screen_width: 1920
+          screen_height: 1080
+        expected: success
+        
+      - id: mouse_003
+        name: Button Press
+        description: Test left button click
+        type: ioctl
+        ioctl_code: IOCTL_VMOUSE_BUTTON
+        input:
+          button: 1  # Left
+          pressed: true
+        expected: success
+        
+      - id: mouse_004
+        name: Scroll Wheel
+        description: Test vertical scroll
+        type: ioctl
+        ioctl_code: IOCTL_VMOUSE_SCROLL
+        input:
+          vertical: 3
+          horizontal: 0
+        expected: success
+        
+      - id: mouse_005
+        name: 5-Button Support
+        description: Test all 5 mouse buttons
+        type: sequence
+        steps:
+          - ioctl: IOCTL_VMOUSE_BUTTON
+            input: { button: 1, pressed: true }   # Left
+          - ioctl: IOCTL_VMOUSE_BUTTON
+            input: { button: 1, pressed: false }
+          - ioctl: IOCTL_VMOUSE_BUTTON
+            input: { button: 2, pressed: true }   # Right
+          - ioctl: IOCTL_VMOUSE_BUTTON
+            input: { button: 2, pressed: false }
+          - ioctl: IOCTL_VMOUSE_BUTTON
+            input: { button: 4, pressed: true }   # X1
+          - ioctl: IOCTL_VMOUSE_BUTTON
+            input: { button: 4, pressed: false }
+        expected: success
+
+  - name: controller_input
+    description: Xbox controller XUSB validation
+    target: drivers/vxinput
+    timeout: 60
+    tests:
+      - id: ctrl_001
+        name: Create Controller
+        description: Create virtual Xbox controller
+        type: ioctl
+        ioctl_code: IOCTL_VXINPUT_CREATE_CONTROLLER
+        input:
+          user_index: 0
+        expected: success
+        output:
+          controller_handle: not_null
+          
+      - id: ctrl_002
+        name: Submit XUSB Report
+        description: Send button state
+        type: ioctl
+        ioctl_code: IOCTL_VXINPUT_SUBMIT_REPORT
+        requires: ctrl_001
+        input:
+          buttons: 0x1000  # A button
+          left_trigger: 128
+          right_trigger: 0
+          thumb_lx: 0
+          thumb_ly: 0
+        expected: success
+        
+      - id: ctrl_003
+        name: Analog Sticks
+        description: Test full analog range
+        type: ioctl
+        ioctl_code: IOCTL_VXINPUT_SUBMIT_REPORT
+        requires: ctrl_001
+        input:
+          thumb_lx: 32767
+          thumb_ly: -32768
+          thumb_rx: -16384
+          thumb_ry: 16384
+        expected: success
+        
+      - id: ctrl_004
+        name: Get Rumble State
+        description: Read rumble feedback
+        type: ioctl
+        ioctl_code: IOCTL_VXINPUT_GET_RUMBLE
+        requires: ctrl_001
+        expected: success
+        
+      - id: ctrl_005
+        name: Remove Controller
+        description: Clean up virtual controller
+        type: ioctl
+        ioctl_code: IOCTL_VXINPUT_REMOVE_CONTROLLER
+        requires: ctrl_001
+        expected: success
+
+  - name: integration
+    description: End-to-end integration tests
+    target: usermode
+    timeout: 120
+    tests:
+      - id: int_001
+        name: Driver Interface Init
+        description: Initialize driver interface
+        type: function
+        function: DriverInterface.Initialize
+        expected: success
+        
+      - id: int_002
+        name: Full Input Pipeline
+        description: Test complete input chain
+        type: sequence
+        steps:
+          - function: DriverInterface.InjectKeyDown
+            args: [0x04, 0]  # 'a', no modifier
+          - function: DriverInterface.InjectMouseMove
+            args: [100, 100, true]  # absolute
+          - function: DriverInterface.InjectMouseButton
+            args: [1, true]  # left button down
+          - sleep: 50
+          - function: DriverInterface.InjectMouseButton
+            args: [1, false]  # left button up
+        expected: success
+
+  - name: stress
+    description: Stress and load tests
+    target: all
+    timeout: 300
+    tests:
+      - id: stress_001
+        name: Rapid Key Input
+        description: 1000 key presses in 5 seconds
+        type: loop
+        count: 1000
+        delay_ms: 5
+        action:
+          ioctl: IOCTL_VKB_INJECT_KEYDOWN
+          input:
+            key_code: "random(0x04, 0x27)"  # a-z, 1-0
+        expected: success
+        
+      - id: stress_002
+        name: Mouse Flood
+        description: High-frequency mouse movement
+        type: loop
+        count: 500
+        delay_ms: 2
+        action:
+          ioctl: IOCTL_VMOUSE_MOVE_RELATIVE
+          input:
+            x: "random(-10, 10)"
+            y: "random(-10, 10)"
+        expected: success
+        
+      - id: stress_003
+        name: Memory Leak Check
+        description: Repeated driver open/close
+        type: loop
+        count: 100
+        action:
+          - open_device: vhidkb
+          - sleep: 10
+          - close_device
+        expected:
+          memory_stable: true
+          no_crashes: true
+
+  - name: protocol
+    description: Network protocol tests
+    target: remote
+    timeout: 60
+    tests:
+      - id: proto_001
+        name: WebSocket Handshake
+        description: Test WS connection
+        type: network
+        protocol: websocket
+        port: 8443
+        action: connect
+        expected: success
+        
+      - id: proto_002
+        name: JSON-RPC Command
+        description: Test command dispatch
+        type: network
+        protocol: websocket
+        command:
+          jsonrpc: "2.0"
+          method: "system.ping"
+          id: 1
+        expected:
+          response_contains: "pong"
+          
+      - id: proto_003
+        name: TLS Handshake
+        description: Test TLS 1.3 connection
+        type: network
+        protocol: tls
+        port: 8443
+        version: "1.3"
+        expected: success
+
+# CI/CD Configuration
+ci_config:
+  triggers:
+    - push
+    - pull_request
+    
+  platforms:
+    - windows-2019
+    - windows-2022
+    
+  configurations:
+    - Debug
+    - Release
+    
+  steps:
+    - name: Build
+      script: scripts/build.bat Release all
+      
+    - name: Unit Tests
+      script: tests/run_tests.bat --category=keyboard,mouse,controller
+      
+    - name: Integration Tests
+      script: tests/run_tests.bat --category=integration
+      
+    - name: Stress Tests
+      script: tests/run_tests.bat --category=stress
+      timeout: 600
+      
+    - name: Protocol Tests
+      script: tests/run_tests.bat --category=protocol
+      
+  artifacts:
+    - build/Release/drivers/*.sys
+    - build/Release/bin/*.exe
+    - test_results.xml
+
+# Test Execution Configuration
+execution:
+  parallel: true
+  max_workers: 4
+  retry_count: 3
+  fail_fast: false
+  
+# Reporting
+reporting:
+  formats:
+    - junit
+    - html
+    - console
+  output_dir: test_results/
+  coverage:
+    enabled: true
+    format: cobertura
