@@ -69,6 +69,113 @@
 
 ---
 
+## Infrastructure Components (Added During Development)
+
+### Unified Logging System
+
+Cross-platform logging interface supporting both kernel-mode and user-mode components with ETW integration.
+
+**Components**:
+```c
+// Kernel-mode logger (src/common/logging/unified_logger.c)
+typedef struct _LOGGER_CONTEXT {
+    LOG_ENTRY Buffer[MAX_LOG_BUFFER_ENTRIES];  // Ring buffer
+    ULONG WriteIndex;
+    KSPIN_LOCK BufferLock;
+    UCHAR MinLevel;
+    ULONG ActiveCategories;
+    // Statistics
+    ULONG64 TotalMessagesLogged;
+    ULONG64 ErrorsLogged;
+    ULONG64 WarningsLogged;
+} LOGGER_CONTEXT;
+
+// Log levels: FATAL, ERROR, WARNING, INFO, DEBUG, TRACE
+// Categories: GENERAL, DRIVER, IO, MEMORY, NETWORK, SECURITY, PERFORMANCE
+```
+
+**Features**:
+- Ring buffer for recent entries (kernel mode)
+- Background async file writer (user-mode)
+- Memory allocation tracking with pool tags
+- ETW integration for Windows Event Viewer
+
+### Performance Monitoring Framework
+
+Real-time performance monitoring and hitch detection for drivers.
+
+**Components**:
+```c
+// Performance monitor (src/common/performance/performance_monitor.c)
+typedef struct _PERF_EVENT {
+    LARGE_INTEGER Timestamp;
+    ULONG Category;           // IOCTL, INPUT_INJECT, HID_REPORT, DPC, ISR, etc.
+    UCHAR Level;             // 0=OK, 1=Warning, 2=Critical, 3=Hang
+    ULONGLONG DurationUs;
+    CHAR Operation[64];
+    CHAR Function[64];
+    ULONG Line;
+} PERF_EVENT;
+
+// Thresholds
+#define PERF_THRESHOLD_WARNING_US   1000    // 1ms
+#define PERF_THRESHOLD_CRITICAL_US  5000    // 5ms
+#define PERF_THRESHOLD_HANG_US      50000   // 50ms
+```
+
+**Features**:
+- Per-operation timing with category tracking
+- Statistics (min/max/avg latency, warning/critical counts)
+- Hitch detection DPC (checks system responsiveness)
+- Ring buffer for recent performance events
+
+### Memory Leak Detection
+
+PowerShell-based audit tool for detecting memory leak patterns.
+
+**Script**: `scripts/MemoryLeakAudit.ps1`
+
+**Detects**:
+- **Kernel**: ExAllocatePool without ExFreePool, handle leaks, object reference leaks
+- **User-mode**: malloc/free mismatches, new/delete issues, COM/Win32 resource leaks
+- **DirectX**: Device/swap chain leaks
+- **Review items**: Early returns without cleanup, exception paths
+
+**Usage**:
+```powershell
+.\scripts\MemoryLeakAudit.ps1 -SourcePath .\src -Verbose
+```
+
+### Async Networking Improvements
+
+Non-blocking WebSocket server to prevent network I/O from impacting system performance.
+
+**Key Changes**:
+- **Before**: Blocking `recv()` calls could hang threads
+- **After**: `select()` multiplexing with worker thread pool
+
+**Architecture**:
+```
+Main Thread          Network Thread           Injection Worker
+    |                      |                        |
+    |--> select() -------->|                        |
+    |   (100ms timeout)    |                        |
+    |                      |--> HandleClientRead()  |
+    |                      |    (non-blocking)      |
+    |                      |                        |
+    |                      |--> Queue message ----->|
+    |                      |                        |--> Driver injection
+    |                      |                        |    (off main thread)
+```
+
+**Features**:
+- Non-blocking sockets with 100ms select() timeout
+- Separate worker thread for driver injection
+- Rate limiting (60 inputs/second per client)
+- Connection multiplexing (up to 10 clients)
+
+---
+
 ## Driver Architecture
 
 ### 1. Virtual HID Keyboard Driver (vhidkb.sys)
@@ -537,7 +644,59 @@ public enum EndpointSource
 }
 ```
 
-#### Automated Testing Integration
+#### Connection Approval System
+**Component**: `src/tray/ConnectionApprovalDialog.xaml.cs`
+
+Dialog for manual approval/denial of incoming remote connections with security information.
+
+**Features**:
+- Shows client IP, hostname, protocol (VNC/WebSocket)
+- Geographic location lookup (if available)
+- Authentication status indicator
+- 30-second auto-reject timeout
+- Duration selection (15 min - 8 hours)
+- Permanent block option
+
+```csharp
+public class ConnectionRequest
+{
+    public string ClientIP { get; set; }
+    public string Hostname { get; set; }
+    public string Protocol { get; set; }
+    public string RequestedAccess { get; set; }
+    public DateTime RequestTime { get; set; }
+    public string GeoLocation { get; set; }
+    public bool IsAuthenticated { get; set; }
+}
+```
+
+#### Certificate Manager
+**Component**: `src/usermode/remote/native/certificate_manager.cpp`
+
+TLS certificate management for secure connections.
+
+**Features**:
+- Create self-signed certificates
+- Import/export certificates (PFX format)
+- Windows certificate store integration
+- Certificate listing and inspection
+- Delete/revoke certificates
+
+```cpp
+class CertificateManager {
+    bool CreateSelfSignedCertificate(
+        LPCWSTR subjectName,      // e.g., L"KVM-Server"
+        LPCWSTR friendlyName,     // e.g., L"KVM Virtual Driver Certificate"
+        int validYears = 1
+    );
+    bool ExportCertificate(
+        LPCWSTR subjectName,
+        LPCWSTR exportPath,
+        bool includePrivateKey
+    );
+    bool ImportCertificate(LPCWSTR importPath, LPCWSTR password);
+};
+```
 - Test profile management (create, edit, delete)
 - Schedule test runs (one-time, recurring)
 - View test results and history
@@ -743,6 +902,77 @@ UINT32 X11KeysymToWindowsVK(UINT32 keysym) {
 - UltraVNC (Windows-specific features)
 - Chrome Remote Desktop (VNC-based)
 - VNC Viewer for Android/iOS
+
+---
+
+### Production Readiness Components
+
+#### EV Code Signing Script
+**Script**: `scripts/sign_drivers.bat`
+
+Automated EV code signing for production driver releases.
+
+**Features**:
+- Sign all driver SYS files
+- Create and sign catalog (CAT) files
+- Verify signatures post-signing
+- Support for test vs production certificates
+- Timestamping for signature validity
+
+```batch
+sign_drivers.bat [Release|Debug] [--dry-run]
+```
+
+#### Stress Testing Utility
+**Component**: `tests/stress_test.cpp`
+
+Long-running stress test for driver stability validation.
+
+**Features**:
+- Configurable duration (default 12 hours)
+- Multi-threaded load generation
+- Keyboard, mouse, and controller input
+- Real-time statistics (events/second, latency)
+- Error rate tracking
+- Memory stability verification
+
+```cpp
+// Usage: stress_test.exe --hours 12 --rate 100
+StressConfig config;
+config.durationHours = 12;
+config.eventsPerSecond = 100;
+config.useAllDrivers = true;
+```
+
+#### Performance Audit Tool
+**Script**: `scripts/PerformanceAudit.ps1`
+
+Detects blocking operations and performance issues in source code.
+
+**Detects**:
+- INFINITE waits (KeWaitForSingleObject, WaitForSingleObject)
+- Blocking socket operations (recv without timeout)
+- Long critical sections with spinlocks
+- Synchronous I/O without OVERLAPPED
+- Missing async patterns
+
+**Usage**:
+```powershell
+.\scripts\PerformanceAudit.ps1 -SourcePath .\src -OutputFile audit_report.txt
+```
+
+#### WHQL Certification Guide
+**Document**: `docs/WHQL_Certification_Guide.md`
+
+Comprehensive guide for Windows Hardware Quality Labs certification.
+
+**Contents**:
+- HLK test setup and requirements
+- Required test categories per driver type
+- Creating submission packages
+- Microsoft Partner Center submission process
+- Common failure patterns and solutions
+- EV certificate requirements
 
 ---
 
