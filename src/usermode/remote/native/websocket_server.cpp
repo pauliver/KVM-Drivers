@@ -1,4 +1,4 @@
-// WebSocket Server - Native protocol handler with JSON-RPC
+// WebSocket Server - Native protocol handler with JSON-RPC and driver integration
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -9,9 +9,55 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#include <functional>
+#include <map>
+
+// Include driver interface
+#include "../../core/driver_interface.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "crypt32.lib")
+
+// Simple JSON parser for RPC (minimal implementation)
+class SimpleJsonParser {
+public:
+    static std::string GetString(const std::string& json, const std::string& key) {
+        std::string search = "\"" + key + "\":\"";
+        size_t pos = json.find(search);
+        if (pos == std::string::npos) return "";
+        pos += search.length();
+        size_t end = json.find("\"", pos);
+        if (end == std::string::npos) return "";
+        return json.substr(pos, end - pos);
+    }
+    
+    static int GetInt(const std::string& json, const std::string& key, int defaultVal = 0) {
+        std::string search = "\"" + key + "\":";
+        size_t pos = json.find(search);
+        if (pos == std::string::npos) return defaultVal;
+        pos += search.length();
+        // Skip whitespace
+        while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+        size_t end = pos;
+        while (end < json.length() && (isdigit(json[end]) || json[end] == '-')) end++;
+        try {
+            return std::stoi(json.substr(pos, end - pos));
+        } catch (...) {
+            return defaultVal;
+        }
+    }
+    
+    static bool GetBool(const std::string& json, const std::string& key, bool defaultVal = false) {
+        std::string search = "\"" + key + "\":";
+        size_t pos = json.find(search);
+        if (pos == std::string::npos) return defaultVal;
+        pos += search.length();
+        while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+        if (json.substr(pos, 4) == "true") return true;
+        if (json.substr(pos, 5) == "false") return false;
+        return defaultVal;
+    }
+};
 
 // SHA1 hash for WebSocket handshake
 std::string Base64Encode(const BYTE* data, DWORD len) {
@@ -44,7 +90,22 @@ std::string ComputeWebSocketAccept(const std::string& key) {
 
 class WebSocketServer {
 public:
-    WebSocketServer(int port = 8443) : port(port), running(false), listenSocket(INVALID_SOCKET) {}
+    WebSocketServer(int port = 8443) 
+        : port(port), running(false), listenSocket(INVALID_SOCKET), driverInterface(nullptr) {
+        // Initialize driver interface
+        driverInterface = new DriverInterface();
+        if (driverInterface) {
+            driverInterface->Initialize();
+        }
+    }
+    
+    ~WebSocketServer() {
+        Stop();
+        if (driverInterface) {
+            driverInterface->Disconnect();
+            delete driverInterface;
+        }
+    }
 
     bool Start() {
         WSADATA wsaData;
@@ -235,11 +296,84 @@ private:
 
     void ProcessMessage(SOCKET clientSocket, const std::string& message) {
         // Parse JSON-RPC request
-        // TODO: Parse JSON and dispatch to appropriate handler
         std::cout << "Received: " << message << std::endl;
-
+        
+        // Extract method
+        std::string method = SimpleJsonParser::GetString(message, "method");
+        if (method.empty()) {
+            SendErrorResponse(clientSocket, 1, -32600, "Invalid Request");
+            return;
+        }
+        
+        // Extract id
+        int id = SimpleJsonParser::GetInt(message, "id", 0);
+        
+        bool success = false;
+        std::string result = "{}";
+        
+        // Dispatch to appropriate handler
+        if (method == "input.keyboard.keydown") {
+            int keyCode = SimpleJsonParser::GetInt(message, "keyCode", 0);
+            int modifiers = SimpleJsonParser::GetInt(message, "modifiers", 0);
+            if (driverInterface && keyCode > 0) {
+                success = driverInterface->InjectKeyDown((UCHAR)keyCode, (UCHAR)modifiers);
+            }
+        }
+        else if (method == "input.keyboard.keyup") {
+            int keyCode = SimpleJsonParser::GetInt(message, "keyCode", 0);
+            int modifiers = SimpleJsonParser::GetInt(message, "modifiers", 0);
+            if (driverInterface && keyCode > 0) {
+                success = driverInterface->InjectKeyUp((UCHAR)keyCode, (UCHAR)modifiers);
+            }
+        }
+        else if (method == "input.mouse.move") {
+            int x = SimpleJsonParser::GetInt(message, "x", 0);
+            int y = SimpleJsonParser::GetInt(message, "y", 0);
+            bool absolute = SimpleJsonParser::GetBool(message, "absolute", false);
+            if (driverInterface) {
+                success = driverInterface->InjectMouseMove(x, y, absolute);
+            }
+        }
+        else if (method == "input.mouse.button") {
+            int button = SimpleJsonParser::GetInt(message, "button", 0);
+            bool pressed = SimpleJsonParser::GetBool(message, "pressed", true);
+            if (driverInterface) {
+                success = driverInterface->InjectMouseButton((UCHAR)button, pressed);
+            }
+        }
+        else if (method == "input.mouse.scroll") {
+            int vertical = SimpleJsonParser::GetInt(message, "vertical", 0);
+            int horizontal = SimpleJsonParser::GetInt(message, "horizontal", 0);
+            if (driverInterface) {
+                success = driverInterface->InjectMouseScroll(vertical, horizontal);
+            }
+        }
+        else if (method == "system.ping") {
+            success = true;
+            result = "\"pong\"";
+        }
+        else if (method == "system.get_version") {
+            success = true;
+            result = "{\"version\":\"1.0.0\",\"protocol\":\"2.0\"}";
+        }
+        else {
+            SendErrorResponse(clientSocket, id, -32601, "Method not found: " + method);
+            return;
+        }
+        
         // Send response
-        std::string response = R"({"jsonrpc":"2.0","result":true,"id":1})";
+        if (success) {
+            std::string response = "{\"jsonrpc\":\"2.0\",\"result\":" + result + ",\"id\":" + std::to_string(id) + "}";
+            SendTextFrame(clientSocket, response);
+        } else {
+            SendErrorResponse(clientSocket, id, -32603, "Injection failed");
+        }
+    }
+    
+    void SendErrorResponse(SOCKET clientSocket, int id, int code, const std::string& message) {
+        std::string response = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":" + 
+                              std::to_string(code) + ",\"message\":\"" + message + "\"},\"id\":" + 
+                              std::to_string(id) + "}";
         SendTextFrame(clientSocket, response);
     }
 
@@ -290,6 +424,7 @@ private:
     bool running;
     SOCKET listenSocket;
     std::thread acceptThread;
+    DriverInterface* driverInterface;
 };
 
 // C interface for integration
