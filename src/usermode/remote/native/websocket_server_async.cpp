@@ -66,24 +66,18 @@ public:
         , logger_(nullptr)
         , perfMonitor_(nullptr) {
         
-        // Initialize logging
-        logger_ = (PLOGGER_CONTEXT)malloc(sizeof(LOGGER_CONTEXT));
-        if (logger_) {
-            LoggerInitialize(logger_, LOG_LEVEL_INFO, LOG_CATEGORY_ALL);
-        }
-        
+        // Initialize logging (use new/delete for RAII safety, not malloc/free)
+        logger_ = new LOGGER_CONTEXT();
+        LoggerInitialize(logger_, LOG_LEVEL_INFO, LOG_CATEGORY_ALL);
+
         // Initialize performance monitor
-        perfMonitor_ = (PPERF_MONITOR_CONTEXT)malloc(sizeof(PERF_MONITOR_CONTEXT));
-        if (perfMonitor_) {
-            PerfMonitorInitialize(perfMonitor_, PERF_CATEGORY_ALL, 1000, 5000);
-            PerfMonitorStartHitchDetection(perfMonitor_, 1000);
-        }
-        
+        perfMonitor_ = new PERF_MONITOR_CONTEXT();
+        PerfMonitorInitialize(perfMonitor_, PERF_CATEGORY_ALL, 1000, 5000);
+        PerfMonitorStartHitchDetection(perfMonitor_, 1000);
+
         // Initialize driver interface
         driverInterface_ = new DriverInterface();
-        if (driverInterface_) {
-            driverInterface_->Initialize();
-        }
+        driverInterface_->Initialize();
         
         // Clear clients
         for (int i = 0; i < WS_MAX_CLIENTS; i++) {
@@ -106,12 +100,14 @@ public:
         if (perfMonitor_) {
             PerfMonitorStopHitchDetection(perfMonitor_);
             PerfMonitorShutdown(perfMonitor_);
-            free(perfMonitor_);
+            delete perfMonitor_;
+            perfMonitor_ = nullptr;
         }
         
         if (logger_) {
             LoggerShutdown(logger_);
-            free(logger_);
+            delete logger_;
+            logger_ = nullptr;
         }
     }
     
