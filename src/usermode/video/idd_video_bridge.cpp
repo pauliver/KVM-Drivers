@@ -146,8 +146,9 @@ public:
     }
     
     // Get encoded video packet for streaming
-    bool GetVideoPacket(void** data, size_t* size, DWORD timeoutMs = 100) {
-        return pipeline_->GetEncodedPacket(*(VideoPacket*)nullptr, timeoutMs);  // Simplified
+    bool GetVideoPacket(VideoPacket& outPacket, DWORD timeoutMs = 100) {
+        if (!pipeline_) return false;
+        return pipeline_->GetEncodedPacket(outPacket, timeoutMs);
     }
     
     // Statistics
@@ -196,31 +197,39 @@ private:
     }
     
     void CaptureLoop() {
-        auto lastTime = std::chrono::steady_clock::now();
-        
         while (running_) {
             auto startTime = std::chrono::steady_clock::now();
-            
+
             if (iddHandle_) {
-                // Real IDD capture - would use shared texture from IDD
-                // For now, fall back to pipeline's test pattern
-                // In production: Copy IDD shared texture to encoder
+                // Real IDD path: request a shared-texture frame via IOCTL
+                // and copy it into the pipeline's input buffer.
+                // IOCTL_IDD_GET_FRAME is a placeholder for the actual IDD IOCTL.
+                // When the IDD driver exposes a shared DXGI texture handle, open
+                // it with ID3D11Device::OpenSharedResource, then CopyResource into
+                // the encoder's input texture.
+                // For now we fall through to the test-pattern path below while
+                // the IDD shared-texture protocol is finalized.
+                (void)iddHandle_;
             }
-            
-            // Frame capture timing
+
+            // Test-pattern / fallback: submit a null frame so the pipeline keeps
+            // ticking and callers always get an encoded packet to work with.
+            if (pipeline_) {
+                pipeline_->SubmitTestFrame();
+            }
+
             auto endTime = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
-            double captureTimeMs = elapsed.count() / 1000.0;
-            
-            // Update rolling average
-            avgCaptureTimeMs_ = (avgCaptureTimeMs_ * 0.9) + (captureTimeMs * 0.1);
+            double captureTimeMs =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    endTime - startTime).count() / 1000.0;
+            avgCaptureTimeMs_ = avgCaptureTimeMs_ * 0.9 + captureTimeMs * 0.1;
             framesCaptured_++;
-            
-            // Maintain target frame rate
-            auto frameTime = std::chrono::milliseconds(1000 / 60);  // 60 FPS
-            auto sleepTime = frameTime - (endTime - startTime);
-            if (sleepTime > std::chrono::milliseconds(0)) {
-                std::this_thread::sleep_for(sleepTime);
+
+            // Maintain target frame rate (60 fps)
+            auto frameTarget = std::chrono::milliseconds(1000 / 60);
+            auto elapsed     = endTime - startTime;
+            if (elapsed < frameTarget) {
+                std::this_thread::sleep_for(frameTarget - elapsed);
             }
         }
     }
@@ -244,8 +253,9 @@ extern "C" {
         ((IddVideoBridge*)bridge)->Stop();
     }
     
-    __declspec(dllexport) bool IddBridge_GetPacket(void* bridge, void** data, size_t* size, DWORD timeout) {
-        return ((IddVideoBridge*)bridge)->GetVideoPacket(data, size, timeout);
+    __declspec(dllexport) bool IddBridge_GetPacket(void* bridge, VideoPacket* outPacket, DWORD timeout) {
+        if (!outPacket) return false;
+        return ((IddVideoBridge*)bridge)->GetVideoPacket(*outPacket, timeout);
     }
     
     __declspec(dllexport) void IddBridge_GetStats(void* bridge, UINT64* captured, UINT64* encoded, double* avgTime) {
