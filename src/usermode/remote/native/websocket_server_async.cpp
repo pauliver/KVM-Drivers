@@ -657,7 +657,47 @@ private:
                         msg.boolParams.size() > 0 ? msg.boolParams[0] : false);
                 }
             }
-            // ... other methods
+            else if (msg.method == "input.keyboard.keyup") {
+                if (driverInterface_ && msg.intParams.size() >= 1) {
+                    success = driverInterface_->InjectKeyUp(
+                        (UCHAR)msg.intParams[0],
+                        msg.intParams.size() > 1 ? (UCHAR)msg.intParams[1] : 0);
+                }
+            }
+            else if (msg.method == "input.mouse.button") {
+                if (driverInterface_ && msg.intParams.size() >= 1) {
+                    bool pressed = msg.boolParams.size() > 0 ? msg.boolParams[0] : true;
+                    success = driverInterface_->InjectMouseButton(
+                        (UCHAR)msg.intParams[0], pressed);
+                }
+            }
+            else if (msg.method == "input.mouse.scroll") {
+                if (driverInterface_ && msg.intParams.size() >= 2) {
+                    success = driverInterface_->InjectMouseScroll(
+                        msg.intParams[0], msg.intParams[1]);
+                }
+            }
+            else if (msg.method == "input.controller.report") {
+                if (driverInterface_ && msg.intParams.size() >= 7) {
+                    XUSB_REPORT report = {};
+                    report.wButtons       = (USHORT)msg.intParams[0];
+                    report.bLeftTrigger   = (BYTE)msg.intParams[1];
+                    report.bRightTrigger  = (BYTE)msg.intParams[2];
+                    report.sThumbLX       = (SHORT)msg.intParams[3];
+                    report.sThumbLY       = (SHORT)msg.intParams[4];
+                    report.sThumbRX       = (SHORT)msg.intParams[5];
+                    report.sThumbRY       = (SHORT)msg.intParams[6];
+                    success = driverInterface_->InjectControllerReport(report);
+                }
+            }
+            else if (msg.method == "system.ping") {
+                success = true;
+                result = "\"pong\"";
+            }
+            else if (msg.method == "system.get_version") {
+                success = true;
+                result = "{\"version\":\"1.0.0\",\"protocol\":\"2.0\"}";
+            }
             
             PerfMonitorEnd(perfMonitor_, PERF_CATEGORY_INPUT_INJECT,
                 msg.method.c_str(), __FUNCTION__, __LINE__, perfStart, nullptr);
@@ -691,3 +731,166 @@ private:
     // Adaptive quality controller - shared across all clients
     AdaptiveQuality adaptiveQuality_;
 };
+
+// ============================================================
+// Helper function definitions (out-of-line)
+// ============================================================
+
+std::string AsyncWebSocketServer::ComputeWebSocketAccept(const std::string& key) {
+    const std::string magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    std::string combined = key + magic;
+
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
+    BYTE hash[20] = {};
+    DWORD hashLen = sizeof(hash);
+
+    if (CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
+        if (CryptCreateHash(hProv, CALG_SHA1, 0, 0, &hHash)) {
+            CryptHashData(hHash, (BYTE*)combined.data(), (DWORD)combined.size(), 0);
+            CryptGetHashParam(hHash, HP_HASHVAL, hash, &hashLen, 0);
+            CryptDestroyHash(hHash);
+        }
+        CryptReleaseContext(hProv, 0);
+    }
+
+    DWORD b64Len = 0;
+    CryptBinaryToStringA(hash, hashLen,
+        CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, NULL, &b64Len);
+    std::string b64(b64Len, '\0');
+    CryptBinaryToStringA(hash, hashLen,
+        CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, &b64[0], &b64Len);
+    b64.resize(b64Len);
+    return b64;
+}
+
+void AsyncWebSocketServer::ParseInjectionRequest(
+        const std::string& json, InjectionMessage& msg) {
+    // Minimal JSON field extractor (no external dependency)
+    auto extractStr = [&](const char* key) -> std::string {
+        std::string k = std::string("\"") + key + "\"";
+        size_t p = json.find(k);
+        if (p == std::string::npos) return "";
+        p = json.find(':', p + k.size());
+        if (p == std::string::npos) return "";
+        p = json.find('"', p);
+        if (p == std::string::npos) return "";
+        size_t e = json.find('"', p + 1);
+        if (e == std::string::npos) return "";
+        return json.substr(p + 1, e - p - 1);
+    };
+    auto extractInt = [&](const char* key, int def = 0) -> int {
+        std::string k = std::string("\"") + key + "\"";
+        size_t p = json.find(k);
+        if (p == std::string::npos) return def;
+        p = json.find(':', p + k.size());
+        if (p == std::string::npos) return def;
+        p++;
+        while (p < json.size() && json[p] == ' ') p++;
+        if (p >= json.size()) return def;
+        try { return std::stoi(json.substr(p)); } catch (...) { return def; }
+    };
+    auto extractBool = [&](const char* key, bool def = false) -> bool {
+        std::string k = std::string("\"") + key + "\"";
+        size_t p = json.find(k);
+        if (p == std::string::npos) return def;
+        p = json.find(':', p + k.size());
+        if (p == std::string::npos) return def;
+        p++;
+        while (p < json.size() && json[p] == ' ') p++;
+        if (p < json.size()) {
+            if (json[p] == 't') return true;
+            if (json[p] == 'f') return false;
+        }
+        return def;
+    };
+
+    msg.method    = extractStr("method");
+    msg.requestId = extractInt("id");
+
+    if (msg.method == "input.keyboard.keydown" ||
+        msg.method == "input.keyboard.keyup") {
+        msg.intParams.push_back(extractInt("keyCode"));
+        msg.intParams.push_back(extractInt("modifiers"));
+    } else if (msg.method == "input.mouse.move") {
+        msg.intParams.push_back(extractInt("x"));
+        msg.intParams.push_back(extractInt("y"));
+        msg.boolParams.push_back(extractBool("absolute"));
+    } else if (msg.method == "input.mouse.button") {
+        msg.intParams.push_back(extractInt("button"));
+        msg.boolParams.push_back(extractBool("pressed", true));
+    } else if (msg.method == "input.mouse.scroll") {
+        msg.intParams.push_back(extractInt("vertical"));
+        msg.intParams.push_back(extractInt("horizontal"));
+    } else if (msg.method == "input.controller.report") {
+        msg.intParams.push_back(extractInt("buttons"));
+        msg.intParams.push_back(extractInt("leftTrigger"));
+        msg.intParams.push_back(extractInt("rightTrigger"));
+        msg.intParams.push_back(extractInt("thumbLX"));
+        msg.intParams.push_back(extractInt("thumbLY"));
+        msg.intParams.push_back(extractInt("thumbRX"));
+        msg.intParams.push_back(extractInt("thumbRY"));
+    }
+}
+
+std::string AsyncWebSocketServer::EncodeWebSocketFrame(const std::string& message) {
+    std::string frame;
+    frame.push_back((char)0x81);  // FIN + text opcode
+    size_t len = message.size();
+    if (len < 126) {
+        frame.push_back((char)len);
+    } else if (len < 65536) {
+        frame.push_back((char)126);
+        frame.push_back((char)((len >> 8) & 0xFF));
+        frame.push_back((char)(len & 0xFF));
+    } else {
+        frame.push_back((char)127);
+        for (int i = 7; i >= 0; i--)
+            frame.push_back((char)((len >> (i * 8)) & 0xFF));
+    }
+    frame += message;
+    return frame;
+}
+
+void AsyncWebSocketServer::SendClose(int clientIndex) {
+    char frame[2] = { (char)0x88, 0x00 };  // FIN + close opcode
+    send(clients_[clientIndex].socket, frame, 2, 0);
+}
+
+void AsyncWebSocketServer::SendPong(int clientIndex, const std::vector<BYTE>& payload) {
+    std::string frame;
+    frame.push_back((char)0x8A);  // FIN + pong opcode
+    size_t len = payload.size();
+    frame.push_back((char)(len & 0x7F));
+    frame.append(payload.begin(), payload.end());
+    send(clients_[clientIndex].socket, frame.data(), (int)frame.size(), 0);
+}
+
+void AsyncWebSocketServer::DisconnectClient(int clientIndex) {
+    if (clients_[clientIndex].socket == INVALID_SOCKET) return;
+
+    char clientIP[INET_ADDRSTRLEN] = "unknown";
+    inet_ntop(AF_INET, &clients_[clientIndex].address.sin_addr,
+        clientIP, INET_ADDRSTRLEN);
+    ConnectionSecurityContext::Global().auditLog.LogDisconnect(
+        clientIP, "WebSocket", "client disconnected");
+    LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
+        "Disconnecting client %d (%s)", clientIndex, clientIP);
+
+    closesocket(clients_[clientIndex].socket);
+    clients_[clientIndex].socket     = INVALID_SOCKET;
+    clients_[clientIndex].connected  = false;
+    clients_[clientIndex].handshaked = false;
+    clients_[clientIndex].recvBuffer.clear();
+    clients_[clientIndex].sendBuffer.clear();
+}
+
+// ============================================================
+// Factory API (see websocket_server_async.h)
+// ============================================================
+#include "websocket_server_async.h"
+
+void* WsAsync_Create(int port)   { return new AsyncWebSocketServer(port); }
+bool  WsAsync_Start(void* srv)   { return static_cast<AsyncWebSocketServer*>(srv)->Start(); }
+void  WsAsync_Stop(void* srv)    { static_cast<AsyncWebSocketServer*>(srv)->Stop(); }
+void  WsAsync_Destroy(void* srv) { delete static_cast<AsyncWebSocketServer*>(srv); }
