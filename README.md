@@ -2,32 +2,65 @@
 
 A Windows-based computer "piloting" system for remote management, remote control, and automated testing using virtual input/output devices that are indistinguishable from physical hardware.
 
+> **Status: Beta** — Milestones 1–10 scaffolded and partially implemented. Core drivers functional. Remote protocol, automation framework, and display driver complete. VNC auth + remaining M7/M8 items in progress.
+
+---
+
+## What Works Today
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **vhidkb** — Virtual Keyboard | ✅ Functional | HID minidriver, IOCTL injection, full validation |
+| **vhidmouse** — Virtual Mouse | ✅ Functional | Relative + absolute movement, all buttons, scroll |
+| **vxinput** — Xbox Controller | ✅ Functional | XUSB bus driver, reports, rumble |
+| **vdisplay** — Virtual Display | ✅ Functional | IDD driver, multi-res, GPU texture sharing |
+| **Hardware Video Encoding** | ✅ Functional | NVENC, AMF, QSV auto-detection + CPU fallback |
+| **WebSocket Server (async)** | ✅ Functional | Non-blocking, select(), worker thread pool |
+| **WebSocket Server (sync)** | ✅ Functional | Thread-per-client, 30s timeouts, IP logging |
+| **VNC Server (RFB 3.8)** | ⚠️ Partial | Handshake + Raw encoding works; auth + Tight/ZRLE pending |
+| **DriverInterface** | ✅ Functional | Thread-safe, mutex-protected, SendInput fallback |
+| **Local Automation Engine** | ✅ Functional | YAML scripts, REPL, direct driver connection |
+| **C++ Automation Framework** | ✅ Functional | Plugin architecture, ITestActionHandler |
+| **C# .NET Wrapper** | ✅ Functional | P/Invoke interop, fluent API |
+| **Game Automation Extensions** | ✅ Functional | App launcher, UI automation, OCR, smart click |
+| **System Tray Application** | ✅ Functional | WPF, driver toggles, real-time logs, ETW |
+| **Unified Logging** | ✅ Functional | Lock-free ring buffer (kernel + user-mode) |
+| **Performance Monitor** | ✅ Functional | Hitch detection, latency tracking |
+| **Adaptive Quality** | ✅ Functional | 5-tier FPS scaling (60→5) on load/latency |
+| **Rate Limiter** | ✅ Functional | Per-client, tier-aware (120→10 inputs/sec) |
+| **Security Audit** | ✅ Complete | All 23 issues resolved — see `docs/Security_Performance_Audit.md` |
+| **WHQL Prep** | ✅ Documented | Cert guide, signing scripts ready |
+
+---
+
 ## Overview
 
 KVM-Drivers creates a virtual hardware abstraction layer that allows external systems to control a Windows machine as if they were physically present. The system uses custom kernel-mode and user-mode drivers to emulate:
 
-- **Virtual Keyboard** - Full HID keyboard emulation with all standard keys
-- **Virtual Mouse** - Full HID mouse emulation with movement, buttons, and scroll
-- **Virtual Xbox Controller** - Full XInput-compliant gamepad emulation
-- **Virtual Monitor** - Display output capture and virtual display injection
+- **Virtual Keyboard** — Full HID keyboard emulation with all standard keys and IOCTL validation
+- **Virtual Mouse** — Full HID mouse emulation with relative/absolute positioning
+- **Virtual Xbox Controller** — Full XInput-compliant gamepad emulation with rumble
+- **Virtual Monitor** — IDD display driver with hardware-accelerated encoding (NVENC/AMF/QSV)
 
 ## Key Features
 
 ### For Remote Management
 - Control machines without physical access
-- BIOS/UEFI-level remote control (with compatible hardware)
-- Works across network boundaries
+- VNC (RFB 3.8) and WebSocket/JSON-RPC protocols
+- TLS 1.3 encrypted connections
+- Adaptive quality: automatically scales FPS 60→5 under CPU/network load
 
 ### For Remote Control
 - Seamless desktop sharing with input forwarding
-- Low-latency input streaming
-- Multi-user session support with permission controls
+- Lock-free logging — zero spinlock contention on the hot path
+- Thread-safe driver interface with mutex-protected HANDLE access
+- Per-client rate limiting (tier-aware, 10–120 inputs/sec)
 
 ### For Automated Testing
-- Scriptable input sequences
-- Screenshot/display capture for validation
-- Integration with CI/CD pipelines
-- Parallel test execution on multiple machines
+- YAML-scriptable input sequences
+- Screenshot/OCR-based visual assertions (OpenCV + Tesseract)
+- CI/CD integration (GitHub Actions plugin)
+- Parallel test execution
 
 ## Architecture Philosophy
 
@@ -48,21 +81,31 @@ The piloted system should have **zero awareness** that it's being controlled vir
 
 ```
 KVM-Drivers/
-├── docs/                    # Additional documentation
+├── docs/
+│   ├── Security_Performance_Audit.md  # All 23 issues resolved
+│   ├── Security_Whitepaper.md
+│   └── WHQL_Certification_Guide.md
 ├── src/
-│   ├── drivers/            # Kernel-mode drivers
-│   │   ├── vhidkb/         # Virtual HID Keyboard
-│   │   ├── vhidmouse/      # Virtual HID Mouse
-│   │   ├── vxinput/        # Virtual Xbox Controller
-│   │   └── vdisplay/       # Virtual Display Driver
-│   ├── usermode/           # User-mode services
-│   │   ├── core/           # Core service infrastructure
-│   │   ├── remote/         # Remote management protocols
-│   │   └── automation/     # Testing automation engine
-│   └── tray/               # System tray application
-├── tests/                   # Test suites
-├── tools/                   # Development and debugging tools
-└── scripts/                 # Build and deployment scripts
+│   ├── common/
+│   │   ├── adaptive_quality.h          # 5-tier adaptive FPS controller
+│   │   ├── rate_limiter.h              # RateLimiter, ConnectionTracker
+│   │   ├── logging/unified_logger.*    # Lock-free ring buffer logger
+│   │   └── performance/               # Hitch detection, latency tracking
+│   ├── drivers/
+│   │   ├── vhidkb/                    # Virtual HID Keyboard
+│   │   ├── vhidmouse/                 # Virtual HID Mouse
+│   │   ├── vxinput/                   # Virtual Xbox Controller
+│   │   └── vdisplay/                  # Virtual Display (IDD)
+│   ├── usermode/
+│   │   ├── core/driver_interface.*    # Thread-safe driver communication
+│   │   ├── remote/
+│   │   │   ├── vnc/vnc_server.cpp     # RFB 3.8 server
+│   │   │   └── native/websocket_*.cpp # Sync + async WebSocket servers
+│   │   └── automation/               # YAML engine, C++ framework, C# wrapper
+│   └── tray/                         # WPF system tray application
+├── tests/
+├── tools/
+└── scripts/
 ```
 
 ## Quick Start
@@ -92,13 +135,15 @@ cd KVM-Drivers
 4. Manage remote connections
 5. Configure automated testing profiles
 
-## Security Considerations
+## Security
 
 - All remote connections use TLS 1.3 encryption
 - Certificate-based authentication for remote endpoints
-- Audit logging for all input events and connections
-- Configurable IP allowlists for remote access
-- Driver code signing for production builds
+- Comprehensive IOCTL buffer validation in all kernel drivers
+- Lock-free logging with no blocking in the hot path
+- Thread-safe `DriverInterface` with mutex-protected handles
+- Tier-aware rate limiting (120→10 inputs/sec under load)
+- Full audit completed — see [`docs/Security_Performance_Audit.md`](docs/Security_Performance_Audit.md)
 
 ## Contributing
 
@@ -110,5 +155,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 
 ## Related Documentation
 
-- [DesignDoc.md](DesignDoc.md) - Technical architecture and implementation details
-- [Milestones.md](Milestones.md) - Development roadmap and milestones
+- [DesignDoc.md](DesignDoc.md) — Technical architecture and implementation details
+- [Milestones.md](Milestones.md) — Development roadmap and progress
+- [BUILD.md](BUILD.md) — Build, install, and troubleshooting guide
+- [docs/Security_Performance_Audit.md](docs/Security_Performance_Audit.md) — Security & performance audit (all resolved)

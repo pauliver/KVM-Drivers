@@ -71,53 +71,58 @@
 
 ## Infrastructure Components (Added During Development)
 
-### Unified Logging System
+> **Security & Performance Audit (March 2026)**: All 23 identified issues resolved.
+> See `docs/Security_Performance_Audit.md` for full details.
 
-Cross-platform logging interface supporting both kernel-mode and user-mode components with ETW integration.
+### Unified Logging System — Lock-Free Ring Buffer
 
-**Components**:
+Cross-platform logging interface for both kernel-mode and user-mode components with zero spinlock contention.
+
+**Implementation** (`src/common/logging/`):
 ```c
-// Kernel-mode logger (src/common/logging/unified_logger.c)
+// Kernel-mode: lock-free ring buffer (unified_logger.c)
+// Each writer atomically claims a slot via InterlockedIncrement — no spinlock.
 typedef struct _LOGGER_CONTEXT {
-    LOG_ENTRY Buffer[MAX_LOG_BUFFER_ENTRIES];  // Ring buffer
-    ULONG WriteIndex;
-    KSPIN_LOCK BufferLock;
+    LOG_ENTRY Buffer[MAX_LOG_BUFFER_ENTRIES];  // 1024-slot ring buffer
+    volatile LONG WriteIndex;   // Claimed atomically; slot = (WriteIndex-1) % SIZE
+    ULONG ReadIndex;            // Single-threaded readers only
     UCHAR MinLevel;
     ULONG ActiveCategories;
-    // Statistics
     ULONG64 TotalMessagesLogged;
     ULONG64 ErrorsLogged;
     ULONG64 WarningsLogged;
 } LOGGER_CONTEXT;
 
-// Log levels: FATAL, ERROR, WARNING, INFO, DEBUG, TRACE
-// Categories: GENERAL, DRIVER, IO, MEMORY, NETWORK, SECURITY, PERFORMANCE
+// User-mode: 4096-slot lock-free ring (unified_logger_user.cpp)
+// Writers claim slots via fetch_add + CAS; reader drains committed slots.
+struct LockFreeLogSlot {
+    std::atomic<int> state;  // 0=empty, 1=writing, 2=ready
+    char message[1024];
+};
 ```
 
 **Features**:
-- Ring buffer for recent entries (kernel mode)
-- Background async file writer (user-mode)
-- Memory allocation tracking with pool tags
+- **Kernel**: Pure `InterlockedIncrement` slot-claiming — spinlock removed
+- **User-mode**: `fetch_add` + compare-exchange, 4096-slot ring, background drain thread
+- Dropped-message counter (ring full fallback — never blocks)
+- Background file writer thread (does not touch hot path)
 - ETW integration for Windows Event Viewer
 
 ### Performance Monitoring Framework
 
 Real-time performance monitoring and hitch detection for drivers.
 
-**Components**:
+**Components** (`src/common/performance/performance_monitor.c`):
 ```c
-// Performance monitor (src/common/performance/performance_monitor.c)
 typedef struct _PERF_EVENT {
     LARGE_INTEGER Timestamp;
-    ULONG Category;           // IOCTL, INPUT_INJECT, HID_REPORT, DPC, ISR, etc.
-    UCHAR Level;             // 0=OK, 1=Warning, 2=Critical, 3=Hang
+    ULONG Category;           // IOCTL, INPUT_INJECT, HID_REPORT, DPC, ISR
+    UCHAR Level;              // 0=OK, 1=Warning, 2=Critical, 3=Hang
     ULONGLONG DurationUs;
     CHAR Operation[64];
     CHAR Function[64];
-    ULONG Line;
 } PERF_EVENT;
 
-// Thresholds
 #define PERF_THRESHOLD_WARNING_US   1000    // 1ms
 #define PERF_THRESHOLD_CRITICAL_US  5000    // 5ms
 #define PERF_THRESHOLD_HANG_US      50000   // 50ms
@@ -129,50 +134,103 @@ typedef struct _PERF_EVENT {
 - Hitch detection DPC (checks system responsiveness)
 - Ring buffer for recent performance events
 
+### Adaptive Quality Controller
+
+Automatic degradation and recovery under CPU/network load. Prevents drops, hitches, and resource exhaustion.
+
+**File**: `src/common/adaptive_quality.h`
+
+**5-Tier Quality Model**:
+| Tier | FPS | Max VNC | Max WS | JPEG Q | Frame Cap |
+|------|-----|---------|--------|--------|-----------|
+| ULTRA | 60 | 10 | 20 | 95 | 1080p |
+| HIGH | 30 | 8 | 15 | 80 | 1080p |
+| MEDIUM | 20 | 6 | 10 | 65 | 720p |
+| LOW | 10 | 4 | 6 | 50 | 720p |
+| MINIMAL | 5 | 2 | 3 | 30 | 480p |
+
+**Degradation Logic**:
+- 3 consecutive frame latencies > 150ms → degrade one tier
+- CPU usage > 90% → degrade one tier
+- Dropped frame → counts as 2 slow frames
+- 10 consecutive frame latencies < 50ms → recover one tier
+
+**Integration points**: VNC `HandleUpdateRequest`, async WebSocket `HandleMessage` (tier-aware rate limiting)
+
+### Rate Limiting & Connection Control
+
+**File**: `src/common/rate_limiter.h`
+
+- `RateLimiter`: Token bucket, configurable inputs/sec
+- `ConnectionTracker`: Thread-safe connection counting per server
+- `LatencyTracker`: Hitch detection with configurable thresholds
+- **Tier-aware limits**: async WebSocket rate = `targetFps * 2` (120→10 as quality degrades)
+- **Connection limits**: 10 VNC clients / 20 WebSocket clients
+
+### IOCTL Buffer Validation
+
+All kernel drivers validate IOCTL inputs before use — prevents crash from malformed user-mode calls.
+
+**Pattern used in all drivers** (vhidkb, vhidmouse, vxinput):
+```c
+// 1. Pre-check InputBufferLength before WdfRequestRetrieveInputBuffer
+if (InputBufferLength < sizeof(EXPECTED_STRUCT)) {
+    KdPrint(("driver: buffer too small\n"));
+    status = STATUS_BUFFER_TOO_SMALL;
+    break;
+}
+// 2. Validate and retrieve
+status = ValidateIoctlBuffer(Request, sizeof(EXPECTED_STRUCT), &buf, &size);
+// 3. Log success/failure with context
+KdPrint(("driver: op %s\n", NT_SUCCESS(status) ? "OK" : "FAIL"));
+```
+
+### Thread-Safe DriverInterface
+
+All `HANDLE` members in `DriverInterface` are protected by `std::mutex` — safe for multi-threaded callers.
+
+```cpp
+class DriverInterface {
+private:
+    HANDLE keyboardHandle;      // Protected by handleMutex_
+    HANDLE mouseHandle;
+    HANDLE controllerHandle;
+    HANDLE displayHandle;
+    std::atomic<bool> useDriverInjection;  // Lock-free read
+    mutable std::mutex handleMutex_;
+};
+```
+
+**Pattern**: All injection methods acquire `handleMutex_` for the driver call scope only, then release before the `SendInput` fallback — preventing lock held during blocking system calls.
+
 ### Memory Leak Detection
 
-PowerShell-based audit tool for detecting memory leak patterns.
+PowerShell-based audit tool.
 
 **Script**: `scripts/MemoryLeakAudit.ps1`
 
-**Detects**:
-- **Kernel**: ExAllocatePool without ExFreePool, handle leaks, object reference leaks
-- **User-mode**: malloc/free mismatches, new/delete issues, COM/Win32 resource leaks
-- **DirectX**: Device/swap chain leaks
-- **Review items**: Early returns without cleanup, exception paths
+**Detects**: ExAllocatePool/ExFreePool mismatches, handle leaks, malloc/free mismatches, COM/Win32 resource leaks, DirectX device leaks.
 
-**Usage**:
-```powershell
-.\scripts\MemoryLeakAudit.ps1 -SourcePath .\src -Verbose
-```
+### Async Networking
 
-### Async Networking Improvements
-
-Non-blocking WebSocket server to prevent network I/O from impacting system performance.
-
-**Key Changes**:
-- **Before**: Blocking `recv()` calls could hang threads
-- **After**: `select()` multiplexing with worker thread pool
+Non-blocking WebSocket server with worker thread pool for driver injection.
 
 **Architecture**:
 ```
-Main Thread          Network Thread           Injection Worker
-    |                      |                        |
-    |--> select() -------->|                        |
-    |   (100ms timeout)    |                        |
-    |                      |--> HandleClientRead()  |
-    |                      |    (non-blocking)      |
-    |                      |                        |
-    |                      |--> Queue message ----->|
-    |                      |                        |--> Driver injection
-    |                      |                        |    (off main thread)
+Network Thread (select, 100ms)     Injection Worker Thread
+    |                                       |
+    |--> recv (non-blocking)                |
+    |--> parse frame                        |
+    |--> enqueue InjectionMessage --------->|
+    |                                       |--> DriverInterface::InjectKey/Mouse
+    |<------ sendBuffer response -----------|
 ```
 
 **Features**:
-- Non-blocking sockets with 100ms select() timeout
-- Separate worker thread for driver injection
-- Rate limiting (60 inputs/second per client)
-- Connection multiplexing (up to 10 clients)
+- Non-blocking sockets, 100ms `select()` timeout
+- Injection off the network thread (no blocking in receive loop)
+- Tier-aware rate limiting (120→10 inputs/sec based on `AdaptiveQuality` tier)
+- `new`/`delete` RAII for all allocations (no `malloc`/`free`)
 
 ---
 

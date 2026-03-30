@@ -2,6 +2,9 @@
 
 This document outlines the phased development approach for building the KVM-Drivers computer piloting system. Each milestone builds upon previous work, with deliverables that can be tested and validated independently.
 
+> **Last Updated:** March 29, 2026  
+> **Current Phase:** Milestones 1–10 scaffolded and feature-complete. Security/performance hardening done. Remaining: VNC auth/encodings, M8 diagnostics UI, production WHQL submission.
+
 ---
 
 ## Milestone 1: Foundation & Infrastructure
@@ -301,22 +304,33 @@ This document outlines the phased development approach for building the KVM-Driv
   - [x] Performance and latency measurement
 - [x] **VNC Server Implementation**:
   - [x] Implement RFB 3.8 protocol handshake
-  - [ ] Support VNC authentication (classic password, MS-Logon II)
-  - [ ] Implement framebuffer encodings (Raw, Hextile, ZRLE, Tight)
-  - [ ] Add X11 keysym to Windows VK code mapping
-  - [ ] Implement pointer event handling from VNC clients
-  - [ ] Support AnonTLS for encrypted VNC connections
+  - [x] SetEncodings desync bug fixed (consumes all offered encodings)
+  - [x] Pre-allocated framebuffer (no per-frame heap alloc)
+  - [x] RecvAll helper with error recovery
+  - [x] Comprehensive IP:port logging on connect/disconnect
+  - [x] Raw encoding functional
+  - [x] Adaptive quality integrated (5-tier FPS scaling)
+  - [ ] VNC authentication (classic password, MS-Logon II)
+  - [ ] Framebuffer encodings: Hextile, ZRLE, Tight (only Raw currently)
+  - [ ] X11 keysym → Windows VK code mapping (dispatch to DriverInterface)
+  - [ ] Pointer event dispatch to DriverInterface
+  - [ ] AnonTLS for encrypted VNC connections
   - [ ] Test with RealVNC, TightVNC, TigerVNC, UltraVNC clients
-  - [ ] Add VNC-specific settings to system tray UI
+  - [ ] VNC-specific settings in system tray UI
 
 ### Security Checklist
 - [x] TLS 1.3 mandatory (no fallback)
 - [x] Certificate management (self-signed + import/export)
-- [x] Session timeout handling
+- [x] Session timeout handling (30s socket timeouts)
+- [x] Rate limiting and input throttling (tier-aware, 10–120/sec)
+- [x] Connection limits (10 VNC / 20 WebSocket)
+- [x] IOCTL buffer validation in all kernel drivers
+- [x] Thread-safe driver interface (mutex-protected handles)
+- [x] Comprehensive security audit completed (23 issues, all resolved)
 - [ ] Mutual authentication (client certs)
 - [ ] Certificate pinning support
 - [ ] IP allowlist capability
-- [ ] Audit logging for all connections
+- [ ] Audit logging for all connections (per-event to ETW)
 
 ---
 
@@ -342,8 +356,10 @@ This document outlines the phased development approach for building the KVM-Driv
 - [x] Build real-time log tail UI (ETWLogViewer)
 - [x] Add connection approval workflow (ConnectionApprovalDialog)
 - [x] Implement notification system
-- [ ] Create diagnostics automation
-- [ ] Add endpoint configuration UI
+- [ ] Create diagnostics automation (self-repair, driver health check)
+- [ ] Add endpoint configuration UI (IP allowlist, cert pinning)
+- [ ] Audit log viewer (per-connection event trail)
+- [ ] IP allowlist configuration in UI
 
 ### UI Tabs
 - **Drivers**: Individual driver control with detailed status
@@ -429,10 +445,23 @@ This document outlines the phased development approach for building the KVM-Driv
 - [x] WHQL test suite preparation (documentation)
 - [x] EV code signing script (scripts/sign_drivers.bat)
 - [x] Performance profiling and optimization (performance_monitor.c)
-- [x] Memory leak detection and fixes (MemoryLeakAudit.ps1)
+- [x] Memory leak detection and fixes
 - [x] Write comprehensive documentation (BUILD.md, WHQL_Certification_Guide.md)
 - [x] Create Windows installer (MSI or custom)
 - [x] Execute stress testing (stress_test.cpp, 12-hour test utility)
+- [x] **Security & Performance Audit** — 23 issues found and all resolved
+  - [x] Socket timeouts + non-blocking accept (VNC + WebSocket)
+  - [x] Thread tracking — no detached threads anywhere
+  - [x] Lock-free ring buffer logging (kernel + user-mode)
+  - [x] IOCTL buffer validation in vhidkb, vhidmouse, vxinput
+  - [x] Thread-safe DriverInterface (std::mutex + std::atomic)
+  - [x] VNC SetEncodings desync bug fixed
+  - [x] Pre-allocated VNC framebuffer
+  - [x] Async WebSocket RAII (malloc→new/delete)
+  - [x] AdaptiveQuality (5-tier FPS scaling, CPU load detection)
+  - [x] Sleep(50) blocking call replaced with SwitchToThread()
+- [ ] **Actual WHQL submission** — requires EV cert purchase and HLK lab run
+- [ ] **72-hour continuous stability test** — framework built, full run pending
 
 ### Documentation Deliverables
 - [x] User manual (BUILD.md comprehensive guide)
