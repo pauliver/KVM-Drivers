@@ -39,6 +39,10 @@ namespace KVM.Tray
         public string VideoEncoder { get; set; } = "Auto";  // Auto, NVENC, AMF, QSV
         public int VideoBitrate { get; set; } = 10000;  // kbps
         
+        // Connection limits
+        public int VncMaxClients { get; set; } = 10;
+        public int WsMaxClients  { get; set; } = 20;
+
         // Security settings
         public bool RequireAuth { get; set; } = true;
         public string AuthToken { get; set; } = "";

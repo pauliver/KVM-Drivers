@@ -1,11 +1,16 @@
 // MainWindow.xaml.cs - KVM Control Panel Code-Behind
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
 using System.ComponentModel;
+using Microsoft.Win32;
 
 namespace KVM.Tray
 {
@@ -22,6 +27,9 @@ namespace KVM.Tray
             InitializeData();
             SetupTimer();
             ApplySettings();
+            // Load persisted audit log
+            DiagnosticsEngine.LoadAuditLog();
+            AuditLogList.ItemsSource = DiagnosticsEngine.AuditLog;
         }
 
         private void LoadSettings()
@@ -47,6 +55,14 @@ namespace KVM.Tray
             WsPort.Text = settings.WebSocketPort.ToString();
             VncRequireAuth.IsChecked = settings.VncRequireAuth;
             UseTls.IsChecked = settings.UseTls;
+
+            // Apply IP allowlist
+            if (settings.AllowedIPs != null && settings.AllowedIPs.Length > 0)
+                IpAllowlist.Text = string.Join(Environment.NewLine, settings.AllowedIPs);
+
+            // Apply max clients if controls exist
+            if (settings.VncMaxClients > 0) VncMaxClients.Text = settings.VncMaxClients.ToString();
+            if (settings.WsMaxClients  > 0) WsMaxClients.Text  = settings.WsMaxClients.ToString();
             
             // Apply driver auto-start if enabled
             if (settings.AutoStartDrivers)
@@ -237,20 +253,94 @@ namespace KVM.Tray
             }
         }
 
-        // Settings Events
+        // ── Diagnostics handlers ─────────────────────────────────────────────
+        private async void RunDiagnostics_Click(object sender, RoutedEventArgs e)
+        {
+            DiagStatus.Text = "Running checks…";
+            DiagResultsList.ItemsSource = null;
+
+            var results = await Task.Run(() => DiagnosticsEngine.RunDriverHealthChecks());
+
+            DiagResultsList.ItemsSource = results;
+
+            int errors   = results.Count(r => r.Severity == DiagSeverity.Error);
+            int warnings = results.Count(r => r.Severity == DiagSeverity.Warning);
+            DiagStatus.Text = errors > 0
+                ? $"{errors} error(s), {warnings} warning(s) — select a row and click Repair"
+                : warnings > 0
+                    ? $"All clear with {warnings} warning(s)"
+                    : "All checks passed ✅";
+
+            DiagnosticsEngine.LogAuditEvent("local", "Diagnostics",
+                "HealthCheck", $"{results.Count} checks: {errors} errors, {warnings} warnings");
+        }
+
+        private async void RepairSelected_Click(object sender, RoutedEventArgs e)
+        {
+            var selected = DiagResultsList.SelectedItem as DiagResult;
+            if (selected == null)
+            {
+                MessageBox.Show("Select a check result to repair.", "Repair",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            DiagStatus.Text = "Repairing…";
+            var (success, msg) = await Task.Run(() => DiagnosticsEngine.AttemptRepair(selected));
+
+            MessageBox.Show(msg, success ? "Repair Succeeded" : "Repair Failed",
+                MessageBoxButton.OK,
+                success ? MessageBoxImage.Information : MessageBoxImage.Warning);
+
+            DiagStatus.Text = success ? "Repair complete — re-run checks" : "Repair failed";
+            AppendLog($"Repair '{selected.Check}': {msg}");
+        }
+
+        private void ExportAuditLog_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new SaveFileDialog
+            {
+                Filter   = "CSV files (*.csv)|*.csv|All files (*.*)|*.*",
+                FileName = $"kvm_audit_{DateTime.Now:yyyyMMdd_HHmmss}.csv",
+                Title    = "Export Audit Log"
+            };
+            if (dlg.ShowDialog() == true)
+            {
+                bool ok = DiagnosticsEngine.ExportAuditLog(dlg.FileName);
+                MessageBox.Show(ok ? $"Exported to {dlg.FileName}" : "Export failed.",
+                    "Export Audit Log", MessageBoxButton.OK,
+                    ok ? MessageBoxImage.Information : MessageBoxImage.Error);
+            }
+        }
+
+        // ── Settings handlers ─────────────────────────────────────────────────
         private void SaveSettings_Click(object sender, RoutedEventArgs e)
         {
             // Update settings from UI
             if (int.TryParse(VncPort.Text, out int vncPort))
                 settings.VncPort = vncPort;
-            
+
             if (int.TryParse(WsPort.Text, out int wsPort))
                 settings.WebSocketPort = wsPort;
-                
+
+            if (int.TryParse(VncMaxClients.Text, out int vncMax))
+                settings.VncMaxClients = vncMax;
+
+            if (int.TryParse(WsMaxClients.Text, out int wsMax))
+                settings.WsMaxClients = wsMax;
+
             settings.VncRequireAuth = VncRequireAuth.IsChecked ?? true;
             settings.UseTls = UseTls.IsChecked ?? true;
-            settings.AutoStartWithWindows = AutoStartCheckBox.IsChecked ?? false;
-            settings.MinimizeToTray = MinimizeToTrayCheckBox.IsChecked ?? true;
+
+            // Parse IP allowlist (trim empty lines)
+            settings.AllowedIPs = IpAllowlist.Text
+                .Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim())
+                .Where(s => s.Length > 0)
+                .ToArray();
+
+            settings.AutoStartWithWindows = AutoStartCheckBox?.IsChecked ?? false;
+            settings.MinimizeToTray = MinimizeToTrayCheckBox?.IsChecked ?? true;
             
             // Save to disk
             if (SettingsManager.SaveSettings(settings))
@@ -347,5 +437,12 @@ namespace KVM.Tray
         public string ClientIP { get; set; }
         public string ConnectionType { get; set; }
         public string ConnectTime { get; set; }
+    }
+
+    // Null-safe CheckBox helper referenced before UI is fully loaded
+    internal static class CheckBoxExt
+    {
+        public static bool IsCheckedSafe(this CheckBox cb, bool defaultVal = false)
+            => cb?.IsChecked ?? defaultVal;
     }
 }
