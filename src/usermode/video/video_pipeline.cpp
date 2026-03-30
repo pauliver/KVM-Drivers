@@ -41,6 +41,7 @@ public:
         : d3dDevice(nullptr)
         , d3dContext(nullptr)
         , dupl(nullptr)
+        , stagingTexture(nullptr)
         , encoderManager(nullptr)
         , running(false)
         , targetFps(60)
@@ -112,6 +113,10 @@ public:
     void Shutdown() {
         Stop();
 
+        if (stagingTexture) {
+            stagingTexture->Release();
+            stagingTexture = nullptr;
+        }
         if (dupl) {
             dupl->Release();
             dupl = nullptr;
@@ -187,6 +192,9 @@ private:
     ID3D11Device* d3dDevice;
     ID3D11DeviceContext* d3dContext;
     IDXGIOutputDuplication* dupl;
+    ID3D11Texture2D* stagingTexture;  // Cached: re-used across frames to avoid per-frame alloc
+    UINT stagingWidth = 0;
+    UINT stagingHeight = 0;
 
     // Encoder
     EncoderManager* encoderManager;
@@ -350,22 +358,29 @@ private:
         D3D11_TEXTURE2D_DESC desc;
         desktopTexture->GetDesc(&desc);
 
-        // Create staging texture for CPU read access
-        D3D11_TEXTURE2D_DESC stagingDesc = desc;
-        stagingDesc.Usage = D3D11_USAGE_STAGING;
-        stagingDesc.BindFlags = 0;
-        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-        stagingDesc.MiscFlags = 0;
+        // Re-create staging texture only when dimensions change (or first frame)
+        if (!stagingTexture || stagingWidth != desc.Width || stagingHeight != desc.Height) {
+            if (stagingTexture) {
+                stagingTexture->Release();
+                stagingTexture = nullptr;
+            }
+            D3D11_TEXTURE2D_DESC stagingDesc = desc;
+            stagingDesc.Usage          = D3D11_USAGE_STAGING;
+            stagingDesc.BindFlags      = 0;
+            stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            stagingDesc.MiscFlags      = 0;
 
-        ID3D11Texture2D* stagingTexture = nullptr;
-        hr = d3dDevice->CreateTexture2D(&stagingDesc, nullptr, &stagingTexture);
-        if (FAILED(hr)) {
-            desktopTexture->Release();
-            dupl->ReleaseFrame();
-            return false;
+            hr = d3dDevice->CreateTexture2D(&stagingDesc, nullptr, &stagingTexture);
+            if (FAILED(hr)) {
+                desktopTexture->Release();
+                dupl->ReleaseFrame();
+                return false;
+            }
+            stagingWidth  = desc.Width;
+            stagingHeight = desc.Height;
         }
 
-        // Copy to staging
+        // Copy to cached staging texture
         d3dContext->CopyResource(stagingTexture, desktopTexture);
         d3dContext->Flush();
 
@@ -395,7 +410,7 @@ private:
             d3dContext->Unmap(stagingTexture, 0);
         }
 
-        stagingTexture->Release();
+        // stagingTexture is NOT released here — it's cached for the next frame
         desktopTexture->Release();
         dupl->ReleaseFrame();
 
@@ -562,9 +577,9 @@ extern "C" {
             return false;
         }
         
-        // Allocate memory that caller can free
+        // Allocate memory that caller must release via VideoPipeline_FreePacket
         *size = packet.data.size();
-        *data = malloc(*size);
+        *data = new(std::nothrow) BYTE[*size];
         if (!*data) return false;
         
         memcpy(*data, packet.data.data(), *size);
@@ -572,7 +587,7 @@ extern "C" {
     }
 
     __declspec(dllexport) void VideoPipeline_FreePacket(void* data) {
-        free(data);
+        delete[] data;
     }
 
     __declspec(dllexport) void VideoPipeline_Destroy(void* pipeline) {

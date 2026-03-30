@@ -485,12 +485,29 @@ private:
                 D3D11_TEXTURE2D_DESC desc;
                 gpuTex->GetDesc(&desc);
 
-                if (!stagingTex) {
-                    desc.Usage          = D3D11_USAGE_STAGING;
-                    desc.BindFlags      = 0;
-                    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-                    desc.MiscFlags      = 0;
-                    d3dDevice_->CreateTexture2D(&desc, nullptr, &stagingTex);
+                // Recreate staging texture if it doesn't exist or dimensions changed
+                D3D11_TEXTURE2D_DESC stagingDesc;
+                bool needNew = !stagingTex;
+                if (stagingTex) {
+                    stagingTex->GetDesc(&stagingDesc);
+                    needNew = (stagingDesc.Width != desc.Width ||
+                               stagingDesc.Height != desc.Height);
+                }
+                if (needNew) {
+                    if (stagingTex) { stagingTex->Release(); stagingTex = nullptr; }
+                    stagingDesc            = desc;
+                    stagingDesc.Usage      = D3D11_USAGE_STAGING;
+                    stagingDesc.BindFlags  = 0;
+                    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                    stagingDesc.MiscFlags  = 0;
+                    d3dDevice_->CreateTexture2D(&stagingDesc, nullptr, &stagingTex);
+                    if (stagingTex) {
+                        // Resize shared framebuffer to match new resolution
+                        std::lock_guard<std::mutex> lk(framebufferMutex_);
+                        framebufferWidth_  = (int)desc.Width;
+                        framebufferHeight_ = (int)desc.Height;
+                        framebuffer_.assign((size_t)framebufferWidth_ * framebufferHeight_ * 4, 0);
+                    }
                 }
 
                 if (stagingTex) {

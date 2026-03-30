@@ -66,16 +66,12 @@ public:
         std::cout << "[LocalAutomation] Initializing...\n";
         
         // Initialize logging
-        logger_ = (PLOGGER_CONTEXT)malloc(sizeof(LOGGER_CONTEXT));
-        if (logger_) {
-            UserLogger_Initialize("local_automation.log", LOG_LEVEL_DEBUG, LOG_CATEGORY_ALL);
-        }
-        
+        logger_ = new LOGGER_CONTEXT();
+        UserLogger_Initialize("local_automation.log", LOG_LEVEL_DEBUG, LOG_CATEGORY_ALL);
+
         // Initialize performance monitoring
-        perfMonitor_ = (PPERF_MONITOR_CONTEXT)malloc(sizeof(PERF_MONITOR_CONTEXT));
-        if (perfMonitor_) {
-            PerfMonitorInitialize(perfMonitor_, PERF_CATEGORY_ALL, 1000, 5000);
-        }
+        perfMonitor_ = new PERF_MONITOR_CONTEXT();
+        PerfMonitorInitialize(perfMonitor_, PERF_CATEGORY_ALL, 1000, 5000);
         
         // Initialize driver interface (direct, no network)
         driverInterface_ = new DriverInterface();
@@ -101,12 +97,14 @@ public:
         
         if (perfMonitor_) {
             PerfMonitorShutdown(perfMonitor_);
-            free(perfMonitor_);
+            delete perfMonitor_;
+            perfMonitor_ = nullptr;
         }
-        
+
         if (logger_) {
             UserLogger_Shutdown();
-            free(logger_);
+            delete logger_;
+            logger_ = nullptr;
         }
     }
     

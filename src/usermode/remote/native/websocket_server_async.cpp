@@ -531,6 +531,15 @@ private:
                 headerSize += 4;
             }
             
+            // Reject absurdly large frames before allocating
+            if (payloadLen > 16 * 1024 * 1024) {
+                LOG_WARNING(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
+                    "Oversized frame (%llu bytes) from client %d — closing",
+                    (unsigned long long)payloadLen, clientIndex);
+                DisconnectClient(clientIndex);
+                return;
+            }
+
             // Full frame available?
             if (len < headerSize + payloadLen) return;
             

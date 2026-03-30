@@ -278,6 +278,18 @@ private:
         closesocket(clientSocket);
     }
 
+    // Receive exactly 'len' bytes; returns false on disconnect or error
+    static bool RecvExact(SOCKET s, void* buf, int len) {
+        int received = 0;
+        char* ptr = static_cast<char*>(buf);
+        while (received < len) {
+            int n = recv(s, ptr + received, len - received, 0);
+            if (n <= 0) return false;
+            received += n;
+        }
+        return true;
+    }
+
     void HandleWebSocket(SOCKET clientSocket, const char* clientIP, int clientPort) {
         while (running) {
             // Read WebSocket frame header
@@ -306,22 +318,27 @@ private:
 
             // Extended payload length
             if (payloadLen == 126) {
-                BYTE len16[2];
-                recv(clientSocket, (char*)len16, 2, 0);
-                payloadLen = (len16[0] << 8) | len16[1];
+                BYTE len16[2] = {};
+                if (!RecvExact(clientSocket, len16, 2)) return;
+                payloadLen = ((UINT64)len16[0] << 8) | len16[1];
             } else if (payloadLen == 127) {
-                BYTE len64[8];
-                recv(clientSocket, (char*)len64, 8, 0);
+                BYTE len64[8] = {};
+                if (!RecvExact(clientSocket, len64, 8)) return;
                 payloadLen = 0;
-                for (int i = 0; i < 8; i++) {
+                for (int i = 0; i < 8; i++)
                     payloadLen = (payloadLen << 8) | len64[i];
-                }
+            }
+
+            // Reject absurdly large frames before allocating
+            if (payloadLen > 16 * 1024 * 1024) {
+                std::cerr << "[WS] Frame too large (" << payloadLen << " bytes), closing" << std::endl;
+                return;
             }
 
             // Read masking key
             BYTE maskKey[4] = {0};
             if (masked) {
-                recv(clientSocket, (char*)maskKey, 4, 0);
+                if (!RecvExact(clientSocket, maskKey, 4)) return;
             }
 
             // Read and unmask payload
