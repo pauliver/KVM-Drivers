@@ -224,18 +224,18 @@ NTSTATUS vhidkbSendHidReport(
         report[2 + i] = KeyCodes[i];
     }
     
-    // For now, just log the report (actual HID injection requires more setup)
+    // Log the constructed report for diagnostic purposes
     KdPrint(("vhidkb: HID Report: [%02x %02x %02x %02x %02x %02x %02x %02x]\n",
-        report[0], report[1], report[2], report[3], 
+        report[0], report[1], report[2], report[3],
         report[4], report[5], report[6], report[7]));
-    
-    // TODO: Send report through HID stack
-    // This requires either:
-    // 1. Creating a virtual HID device using vhidmini or similar
-    // 2. Using SendInput from user-mode (service)
-    // 3. Direct KbdClass injection (more complex)
-    
-    return STATUS_SUCCESS;
+
+    // Kernel-mode HID injection via pending read queue is not yet implemented.
+    // Returning STATUS_NOT_IMPLEMENTED causes driver_interface.cpp to fall back
+    // to the SendInput path, which correctly injects the key event.
+    // When the VHF (Virtual HID Framework) path is implemented, remove this
+    // and complete pending HID read IRPs with the report data above.
+    UNREFERENCED_PARAMETER(DeviceContext);
+    return STATUS_NOT_IMPLEMENTED;
 }
 
 NTSTATUS vhidkbInjectKeyDown(

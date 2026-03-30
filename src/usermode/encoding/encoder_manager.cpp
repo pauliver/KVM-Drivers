@@ -198,7 +198,10 @@ public:
             return IntelEncoder_Encode(currentEncoder, nv12Data, output, outputSize);
 
         case EncoderType::Software:
-            // TODO: Implement software encoder fallback (e.g., x264 via OpenH264)
+            // No x264/OpenH264 dependency is bundled.  Returning false here causes
+            // video_pipeline.cpp's EncodeLoop to fall back to raw BGRA passthrough,
+            // which is acceptable for LAN/local use.  Add OpenH264 or libx264 here
+            // to enable compressed streaming over WAN links.
             return false;
 
         default:

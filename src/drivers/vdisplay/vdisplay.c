@@ -106,14 +106,22 @@ HRESULT WINAPI IddSamplePlugin::FinishFrameProcessing(
     g_DisplayContext.Width = desc.Width;
     g_DisplayContext.Height = desc.Height;
     
-    // TODO: Copy frame to staging resource for CPU/GPU access
-    // This would involve:
-    // 1. Creating a staging texture with CPU read access
-    // 2. Copying from pFrameTexture to staging texture
-    // 3. Mapping the staging texture
-    // 4. Passing the mapped data to the encoder
-    
-    // For now, just signal that a frame is available
+    // Publish the DXGI shared handle so consumers (video pipeline, VNC server)
+    // can call ID3D11Device::OpenSharedResource on their own D3D11 device.
+    IDXGIResource* pDxgiRes = NULL;
+    HRESULT hrShare = pFrameTexture->QueryInterface(
+        &IID_IDXGIResource, (void**)&pDxgiRes);
+    if (SUCCEEDED(hrShare) && pDxgiRes) {
+        HANDLE hNew = NULL;
+        if (SUCCEEDED(pDxgiRes->GetSharedHandle(&hNew)) && hNew) {
+            EnterCriticalSection(&g_DisplayContext.FrameMutex);
+            g_DisplayContext.SharedTextureHandle = hNew;
+            g_DisplayContext.FrameCount++;
+            LeaveCriticalSection(&g_DisplayContext.FrameMutex);
+        }
+        pDxgiRes->Release();
+    }
+
     if (g_DisplayContext.FrameCaptureEvent) {
         SetEvent(g_DisplayContext.FrameCaptureEvent);
     }
@@ -176,6 +184,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IddPluginInit(
     // Initialize context
     g_DisplayContext.Adapter = Adapter;
     g_DisplayContext.FrameCaptureEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    InitializeCriticalSection(&g_DisplayContext.FrameMutex);
     
     return S_OK;
 }
@@ -201,7 +210,9 @@ extern "C" __declspec(dllexport) BOOL WINAPI VDispIoctlHandler(
             info->Height = g_DisplayContext.Height;
             info->Stride = g_DisplayContext.Width * 4; // RGBA32
             info->Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-            info->SharedTextureHandle = nullptr; // Would be set when frame is available
+            EnterCriticalSection(&g_DisplayContext.FrameMutex);
+            info->SharedTextureHandle = g_DisplayContext.SharedTextureHandle;
+            LeaveCriticalSection(&g_DisplayContext.FrameMutex);
             *lpBytesReturned = sizeof(VDISP_FRAMEBUFFER_INFO);
             return TRUE;
         }
@@ -236,6 +247,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
             CloseHandle(g_DisplayContext.FrameCaptureEvent);
             g_DisplayContext.FrameCaptureEvent = nullptr;
         }
+        DeleteCriticalSection(&g_DisplayContext.FrameMutex);
         break;
     }
     

@@ -16,7 +16,8 @@ public:
         // Create notify icon
         notifyIcon = gcnew NotifyIcon();
         notifyIcon->Text = "KVM Remote Control";
-        notifyIcon->Icon = gcnew System::Drawing::Icon("KVM.ico"); // TODO: Create icon
+        // Use embedded system icon; replace with a branded KVM.ico when available
+        notifyIcon->Icon = System::Drawing::SystemIcons::Application;
         notifyIcon->Visible = true;
         
         // Create context menu

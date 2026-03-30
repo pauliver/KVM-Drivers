@@ -176,27 +176,58 @@ namespace KVM.Tray
             SaveDriverState(driverName, !isRunning);
         }
         
-        private void StartDriver(string driverName, Ellipse statusIndicator, 
+        private static string DriverServiceName(string driverName) => driverName switch
+        {
+            "Keyboard"   => "vhidkb",
+            "Mouse"      => "vhidmouse",
+            "Controller" => "vxinput",
+            "Display"    => "vdisplay",
+            _            => driverName
+        };
+
+        private void StartDriver(string driverName, Ellipse statusIndicator,
             TextBlock stateText, Button toggleButton)
         {
-            // Update UI
+            string svcName = DriverServiceName(driverName);
+            try
+            {
+                using var sc = new System.ServiceProcess.ServiceController(svcName);
+                if (sc.Status != System.ServiceProcess.ServiceControllerStatus.Running)
+                    sc.Start();
+                sc.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Running,
+                    TimeSpan.FromSeconds(5));
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"[WARN] Could not start service '{svcName}': {ex.Message}");
+            }
+
             if (statusIndicator != null) statusIndicator.Fill = Brushes.Green;
-            if (stateText != null) stateText.Text = "Running";
-            if (toggleButton != null) toggleButton.Content = "Stop";
-            
-            // TODO: Actual driver start via service
+            if (stateText != null)       stateText.Text        = "Running";
+            if (toggleButton != null)    toggleButton.Content  = "Stop";
             AppendLog($"Driver '{driverName}' started");
         }
-        
-        private void StopDriver(string driverName, Ellipse statusIndicator, 
+
+        private void StopDriver(string driverName, Ellipse statusIndicator,
             TextBlock stateText, Button toggleButton)
         {
-            // Update UI
+            string svcName = DriverServiceName(driverName);
+            try
+            {
+                using var sc = new System.ServiceProcess.ServiceController(svcName);
+                if (sc.Status == System.ServiceProcess.ServiceControllerStatus.Running)
+                    sc.Stop();
+                sc.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Stopped,
+                    TimeSpan.FromSeconds(5));
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"[WARN] Could not stop service '{svcName}': {ex.Message}");
+            }
+
             if (statusIndicator != null) statusIndicator.Fill = Brushes.Gray;
-            if (stateText != null) stateText.Text = "Stopped";
-            if (toggleButton != null) toggleButton.Content = "Start";
-            
-            // TODO: Actual driver stop via service
+            if (stateText != null)       stateText.Text        = "Stopped";
+            if (toggleButton != null)    toggleButton.Content  = "Start";
             AppendLog($"Driver '{driverName}' stopped");
         }
         
@@ -254,9 +285,26 @@ namespace KVM.Tray
         // Remote Events
         private void RestartServer_Click(object sender, RoutedEventArgs e)
         {
-            // TODO: Actually restart server
-            MessageBox.Show("Server restarted", "Restart", MessageBoxButton.OK, MessageBoxImage.Information);
-            AppendLog("Remote server restarted");
+            try
+            {
+                using var sc = new System.ServiceProcess.ServiceController("KVMService");
+                if (sc.Status == System.ServiceProcess.ServiceControllerStatus.Running)
+                {
+                    sc.Stop();
+                    sc.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Stopped,
+                        TimeSpan.FromSeconds(10));
+                }
+                sc.Start();
+                sc.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Running,
+                    TimeSpan.FromSeconds(10));
+                AppendLog("Remote server restarted");
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"[ERROR] Failed to restart KVMService: {ex.Message}");
+                MessageBox.Show($"Restart failed: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private void DisconnectClient_Click(object sender, RoutedEventArgs e)

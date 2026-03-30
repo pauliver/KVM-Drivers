@@ -14,10 +14,16 @@ DEFINE_GUID(GUID_CONTAINER_ID, 0xA1B2C3D4, 0xE5F6, 0x7890, 0xAB, 0xCD, 0xEF, 0x1
 typedef struct _VDISPLAY_CONTEXT {
     IDDCX_ADAPTER Adapter;
     IDDCX_MONITOR Monitor;
-    HANDLE FrameCaptureEvent;
-    UINT Width;
-    UINT Height;
-    UINT RefreshRate;
+    HANDLE FrameCaptureEvent;   // Auto-reset: signalled each time a frame arrives
+    UINT   Width;
+    UINT   Height;
+    UINT   RefreshRate;
+    // Shared GPU texture handle from the most recent IDD frame.
+    // Consumer (video pipeline / VNC server) calls OpenSharedResource with this.
+    // Protected by FrameMutex: close the old handle before overwriting.
+    CRITICAL_SECTION FrameMutex;
+    HANDLE           SharedTextureHandle;  // HANDLE from IDXGIResource::GetSharedHandle
+    UINT64           FrameCount;           // Monotonically increasing frame counter
 } VDISPLAY_CONTEXT, *PVDISPLAY_CONTEXT;
 
 // IDD Callback functions
