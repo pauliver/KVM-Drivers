@@ -492,6 +492,166 @@ private:
         closesocket(clientSocket);
     }
 
+    // Hextile encoding constants
+    static constexpr int HT_Raw             = 1;
+    static constexpr int HT_BackgroundSpec  = 2;
+    static constexpr int HT_ForegroundSpec  = 4;
+    static constexpr int HT_AnySubrects     = 8;
+    static constexpr int HT_SubrectsColored = 16;
+    static constexpr int TILE_SIZE          = 16;
+
+    // Send Hextile-encoded data for a rect. Must be called with framebufferMutex_ held.
+    void SendHextileData(SOCKET sock, int rx, int ry, int rw, int rh) {
+        // Each 16x16 tile: detect uniform color and emit compact representation,
+        // or fall back to Raw for complex tiles.
+        std::vector<UINT8> tileBuf;
+        tileBuf.reserve(TILE_SIZE * TILE_SIZE * 4 + 16);
+
+        UINT32 lastBG = 0;
+        bool firstTile = true;
+
+        for (int ty = 0; ty < rh; ty += TILE_SIZE) {
+            int th = std::min(TILE_SIZE, rh - ty);
+            for (int tx = 0; tx < rw; tx += TILE_SIZE) {
+                int tw = std::min(TILE_SIZE, rw - tx);
+
+                int fbX = rx + tx;
+                int fbY = ry + ty;
+
+                // Sample tile pixels from framebuffer (BGRX 32-bit)
+                const UINT32* fb = reinterpret_cast<const UINT32*>(framebuffer_.data());
+
+                // Check if tile is uniform (all same color)
+                UINT32 firstPx = 0;
+                bool uniform = true;
+
+                for (int py = 0; py < th && uniform; py++) {
+                    for (int px = 0; px < tw; px++) {
+                        size_t idx = (size_t)(fbY + py) * framebufferWidth_ + (fbX + px);
+                        if (idx >= framebuffer_.size() / 4) { uniform = false; break; }
+                        UINT32 pxVal = fb[idx] & 0x00FFFFFF;  // ignore alpha
+                        if (py == 0 && px == 0) { firstPx = pxVal; }
+                        else if (pxVal != firstPx) { uniform = false; break; }
+                    }
+                }
+
+                tileBuf.clear();
+
+                if (uniform) {
+                    // Uniform tile: send BackgroundSpecified with no subrects
+                    bool bgChanged = firstTile || (firstPx != lastBG);
+                    UINT8 subtype = bgChanged ? (UINT8)HT_BackgroundSpec : 0;
+                    tileBuf.push_back(subtype);
+                    if (bgChanged) {
+                        // 4 bytes: BGRX (little-endian, as in framebuffer)
+                        UINT8 r = (UINT8)((firstPx >>  0) & 0xFF);  // B
+                        UINT8 g = (UINT8)((firstPx >>  8) & 0xFF);  // G
+                        UINT8 b = (UINT8)((firstPx >> 16) & 0xFF);  // R
+                        UINT8 a = 0;
+                        tileBuf.push_back(b);  // red channel first for BGRX
+                        tileBuf.push_back(g);
+                        tileBuf.push_back(r);
+                        tileBuf.push_back(a);
+                        lastBG = firstPx;
+                    }
+                    firstTile = false;
+                } else {
+                    // Complex tile: build subrects for foreground color runs,
+                    // fall back to Raw if subrects would be larger
+                    
+                    // Collect unique non-background colors as candidate subrects
+                    // Strategy: use Raw for complex tiles with > 4 colors
+                    UINT32 colors[8];
+                    int nColors = 0;
+                    bool tooMany = false;
+
+                    for (int py = 0; py < th && !tooMany; py++) {
+                        for (int px = 0; px < tw; px++) {
+                            size_t idx = (size_t)(fbY + py) * framebufferWidth_ + (fbX + px);
+                            if (idx >= framebuffer_.size() / 4) continue;
+                            UINT32 pxVal = fb[idx] & 0x00FFFFFF;
+                            bool found = false;
+                            for (int c = 0; c < nColors; c++) {
+                                if (colors[c] == pxVal) { found = true; break; }
+                            }
+                            if (!found) {
+                                if (nColors >= 8) { tooMany = true; break; }
+                                colors[nColors++] = pxVal;
+                            }
+                        }
+                    }
+
+                    if (tooMany || nColors > 4) {
+                        // Raw tile
+                        UINT8 subtype = (UINT8)HT_Raw;
+                        tileBuf.push_back(subtype);
+                        for (int py = 0; py < th; py++) {
+                            for (int px = 0; px < tw; px++) {
+                                size_t idx = (size_t)(fbY + py) * framebufferWidth_ + (fbX + px);
+                                UINT32 pxVal = (idx < framebuffer_.size() / 4) ? fb[idx] : 0;
+                                tileBuf.push_back((UINT8)(pxVal        & 0xFF));
+                                tileBuf.push_back((UINT8)((pxVal >> 8) & 0xFF));
+                                tileBuf.push_back((UINT8)((pxVal >>16) & 0xFF));
+                                tileBuf.push_back(0);
+                            }
+                        }
+                    } else {
+                        // Subrect encoding: 2-color tiles use FG + subrects
+                        // Background = most frequent color, FG = the rest
+                        UINT32 bgColor = colors[0];  // use first as background
+                        UINT32 fgColor = colors[1 % nColors];
+
+                        bool bgChanged = firstTile || (bgColor != lastBG);
+                        UINT8 subtype = (UINT8)(HT_ForegroundSpec | HT_AnySubrects |
+                            (bgChanged ? HT_BackgroundSpec : 0) |
+                            (nColors > 2 ? HT_SubrectsColored : 0));
+                        tileBuf.push_back(subtype);
+
+                        if (bgChanged) {
+                            tileBuf.push_back((UINT8)(bgColor        & 0xFF));
+                            tileBuf.push_back((UINT8)((bgColor >> 8) & 0xFF));
+                            tileBuf.push_back((UINT8)((bgColor >>16) & 0xFF));
+                            tileBuf.push_back(0);
+                            lastBG = bgColor;
+                        }
+                        tileBuf.push_back((UINT8)(fgColor        & 0xFF));
+                        tileBuf.push_back((UINT8)((fgColor >> 8) & 0xFF));
+                        tileBuf.push_back((UINT8)((fgColor >>16) & 0xFF));
+                        tileBuf.push_back(0);
+
+                        // Count and encode subrects (1x1 runs of non-BG pixels)
+                        std::vector<UINT8> subrects;
+                        for (int py = 0; py < th; py++) {
+                            for (int px = 0; px < tw; px++) {
+                                size_t idx = (size_t)(fbY + py) * framebufferWidth_ + (fbX + px);
+                                if (idx >= framebuffer_.size() / 4) continue;
+                                UINT32 pxVal = fb[idx] & 0x00FFFFFF;
+                                if (pxVal != bgColor) {
+                                    if (nColors > 2) {
+                                        // SubrectsColoured: color + pos
+                                        subrects.push_back((UINT8)(pxVal        & 0xFF));
+                                        subrects.push_back((UINT8)((pxVal >> 8) & 0xFF));
+                                        subrects.push_back((UINT8)((pxVal >>16) & 0xFF));
+                                        subrects.push_back(0);
+                                    }
+                                    // subrect: hi4=x, lo4=y, hi4=w-1, lo4=h-1
+                                    subrects.push_back((UINT8)((px << 4) | (py & 0xF)));
+                                    subrects.push_back((UINT8)(0x00));  // 1x1 subrect (w-1=0, h-1=0)
+                                }
+                            }
+                        }
+                        // Subrect count (1 byte)
+                        tileBuf.push_back((UINT8)(subrects.size() / (nColors > 2 ? 6 : 2)));
+                        tileBuf.insert(tileBuf.end(), subrects.begin(), subrects.end());
+                        firstTile = false;
+                    }
+                }
+
+                send(sock, (char*)tileBuf.data(), (int)tileBuf.size(), 0);
+            }
+        }
+    }
+
     // VNC authentication: generate challenge, verify DES response
     bool DoVNCAuth(SOCKET sock) {
         // Generate 16-byte random challenge
@@ -603,6 +763,12 @@ private:
             return;
         }
 
+        // Pick best encoding: prefer Hextile (5) over Raw (0)
+        bool useHextile = false;
+        for (INT32 enc : negotiatedEncodings_) {
+            if (enc == RFB::EncodingHextile) { useHextile = true; break; }
+        }
+
         auto frameStart = std::chrono::high_resolution_clock::now();
 
         // Send framebuffer update header
@@ -614,7 +780,7 @@ private:
         UINT16 rectY = htons(y);
         UINT16 rectW = htons(w);
         UINT16 rectH = htons(h);
-        INT32 encoding = htonl(RFB::EncodingRaw);
+        INT32 encoding = htonl(useHextile ? RFB::EncodingHextile : RFB::EncodingRaw);
 
         send(sock, (char*)&rectX, 2, 0);
         send(sock, (char*)&rectY, 2, 0);
@@ -622,18 +788,19 @@ private:
         send(sock, (char*)&rectH, 2, 0);
         send(sock, (char*)&encoding, 4, 0);
 
-        // Use pre-allocated framebuffer - no per-frame heap allocation
         {
             std::lock_guard<std::mutex> lock(framebufferMutex_);
-            // Copy requested region from pre-allocated buffer
-            // (In production: copy from actual captured screen data)
-            size_t srcOffset = ((size_t)y * framebufferWidth_ + x) * 4;
-            if (srcOffset + dataSize <= framebuffer_.size()) {
-                send(sock, framebuffer_.data() + srcOffset, (int)dataSize, 0);
+            if (useHextile) {
+                SendHextileData(sock, x, y, w, h);
             } else {
-                // Fallback: send black pixels if out of bounds
-                std::vector<char> black(dataSize, 0);
-                send(sock, black.data(), (int)dataSize, 0);
+                // Raw encoding
+                size_t srcOffset = ((size_t)y * framebufferWidth_ + x) * 4;
+                if (srcOffset + dataSize <= framebuffer_.size()) {
+                    send(sock, framebuffer_.data() + srcOffset, (int)dataSize, 0);
+                } else {
+                    std::vector<char> black(dataSize, 0);
+                    send(sock, black.data(), (int)dataSize, 0);
+                }
             }
         }
 
