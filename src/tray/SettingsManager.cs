@@ -47,9 +47,12 @@ namespace KVM.Tray
         public bool   VncAnonTls    { get; set; } = false;
         public string VncCertPin    { get; set; } = "";  // SHA-1 thumbprint for cert pinning
 
+        // Global connection auth policy
+        public bool   RequireRemoteAuth { get; set; } = true;  // Require auth for non-localhost
+        public bool   TrustOnFirstUse   { get; set; } = true;  // Show approval dialog for unknowns
+        public string AuthToken         { get; set; } = "";    // Pre-shared bearer token (optional)
+
         // Security settings
-        public bool RequireAuth { get; set; } = true;
-        public string AuthToken { get; set; } = "";
         public string[] AllowedIPs { get; set; } = new string[0];
         
         // Version for migrations

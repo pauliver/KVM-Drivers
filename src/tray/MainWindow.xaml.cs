@@ -20,6 +20,8 @@ namespace KVM.Tray
         private DispatcherTimer refreshTimer;
         private AppSettings settings;
         
+        private ConnectionApprovalManager approvalManager_;
+
         public MainWindow()
         {
             InitializeComponent();
@@ -30,6 +32,12 @@ namespace KVM.Tray
             // Load persisted audit log
             DiagnosticsEngine.LoadAuditLog();
             AuditLogList.ItemsSource = DiagnosticsEngine.AuditLog;
+            // Start connection approval manager (shows dialog for unknown remote clients)
+            approvalManager_ = new ConnectionApprovalManager(Dispatcher);
+            approvalManager_.ConnectionDecisionMade += (ip, result) =>
+                AppendLog($"[Auth] {ip} → {result}");
+            approvalManager_.Start();
+            RefreshTrustedClientsList();
         }
 
         private void LoadSettings()
@@ -67,6 +75,11 @@ namespace KVM.Tray
             // Apply VNC security settings
             VncAnonTls.IsChecked = settings.VncAnonTls;
             VncCertPin.Text = settings.VncCertPin ?? "";
+
+            // Apply auth policy
+            RequireRemoteAuth.IsChecked = settings.RequireRemoteAuth;
+            TrustOnFirstUse.IsChecked   = settings.TrustOnFirstUse;
+            AuthTokenBox.Text           = settings.AuthToken ?? "";
             
             // Apply driver auto-start if enabled
             if (settings.AutoStartDrivers)
@@ -257,6 +270,44 @@ namespace KVM.Tray
             }
         }
 
+        // ── Trusted clients handlers ──────────────────────────────────────────
+        private void RefreshTrustedClientsList()
+        {
+            var list = ConnectionApprovalManager.LoadTrustedClients();
+            TrustedClientsList.ItemsSource = list;
+        }
+
+        private void RevokeTrusted_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = TrustedClientsList.SelectedItem as TrustedClientEntry;
+            if (entry == null) { MessageBox.Show("Select a client to revoke."); return; }
+            ConnectionApprovalManager.RevokeTrustedClient(entry.IP);
+            AppendLog($"[Auth] Revoked trust for {entry.IP}");
+            RefreshTrustedClientsList();
+        }
+
+        private void RevokeAllTrusted_Click(object sender, RoutedEventArgs e)
+        {
+            if (MessageBox.Show("Revoke ALL trusted clients?", "Confirm",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+            foreach (var entry in ConnectionApprovalManager.LoadTrustedClients())
+                ConnectionApprovalManager.RevokeTrustedClient(entry.IP);
+            AppendLog("[Auth] Revoked all trusted clients");
+            RefreshTrustedClientsList();
+        }
+
+        private void RefreshTrusted_Click(object sender, RoutedEventArgs e)
+            => RefreshTrustedClientsList();
+
+        private void GenerateAuthToken_Click(object sender, RoutedEventArgs e)
+        {
+            var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
+            var bytes = new byte[24];
+            rng.GetBytes(bytes);
+            AuthTokenBox.Text = Convert.ToBase64String(bytes).TrimEnd('=');
+            AppendLog("[Auth] New bearer token generated — save settings to apply");
+        }
+
         // ── Diagnostics handlers ─────────────────────────────────────────────
         private async void RunDiagnostics_Click(object sender, RoutedEventArgs e)
         {
@@ -335,8 +386,11 @@ namespace KVM.Tray
 
             settings.VncRequireAuth = VncRequireAuth.IsChecked ?? true;
             settings.UseTls         = UseTls.IsChecked ?? true;
-            settings.VncAnonTls     = VncAnonTls.IsChecked ?? false;
-            settings.VncCertPin     = VncCertPin.Text?.Trim() ?? "";
+            settings.VncAnonTls       = VncAnonTls.IsChecked ?? false;
+            settings.VncCertPin       = VncCertPin.Text?.Trim() ?? "";
+            settings.RequireRemoteAuth = RequireRemoteAuth.IsChecked ?? true;
+            settings.TrustOnFirstUse   = TrustOnFirstUse.IsChecked ?? true;
+            settings.AuthToken         = AuthTokenBox.Text?.Trim() ?? "";
 
             // Parse IP allowlist (trim empty lines)
             settings.AllowedIPs = IpAllowlist.Text
@@ -425,6 +479,7 @@ namespace KVM.Tray
         protected override void OnClosing(CancelEventArgs e)
         {
             refreshTimer?.Stop();
+            approvalManager_?.Stop();
             base.OnClosing(e);
         }
         

@@ -326,14 +326,34 @@ private:
         char clientIP[INET_ADDRSTRLEN] = "unknown";
         inet_ntop(AF_INET, &clientAddr.sin_addr, clientIP, INET_ADDRSTRLEN);
 
-        // IP allowlist enforcement via ConnectionSecurityContext
+        // Full auth gate: localhost bypass → trusted client → TOFU approval → reject
         auto& sec = ConnectionSecurityContext::Global();
-        if (!sec.ValidateConnection(clientIP, "WebSocket")) {
+
+        // First check IP allowlist (hard block before any auth logic)
+        if (!sec.ipAllowlist.IsAllowed(clientIP)) {
+            sec.auditLog.LogIpBlocked(clientIP);
             LOG_WARNING(logger_, LOG_CATEGORY_SECURITY, "AsyncWebSocket",
-                "Connection rejected by IP allowlist: %s", clientIP);
+                "Connection blocked by IP allowlist: %s", clientIP);
             closesocket(clientSocket);
             return;
         }
+
+        // Run connection auth gate (localhost bypass, trusted client, TOFU)
+        auto decision = sec.authGate.Evaluate(clientIP, "WebSocket");
+        if (!sec.authGate.IsAllowed(decision)) {
+            sec.auditLog.LogAuthFail(clientIP, "WebSocket",
+                sec.authGate.DecisionName(decision));
+            LOG_WARNING(logger_, LOG_CATEGORY_SECURITY, "AsyncWebSocket",
+                "Connection rejected (%s): %s",
+                sec.authGate.DecisionName(decision), clientIP);
+            closesocket(clientSocket);
+            return;
+        }
+
+        LOG_INFO(logger_, LOG_CATEGORY_SECURITY, "AsyncWebSocket",
+            "Connection permitted (%s): %s",
+            sec.authGate.DecisionName(decision), clientIP);
+        sec.auditLog.LogConnect(clientIP, "WebSocket");
 
         // Find free slot
         int slot = -1;

@@ -232,6 +232,51 @@
                             </Grid>
                         </GroupBox>
 
+                        <!-- Connection Auth Policy -->
+                        <GroupBox Header="Connection Authentication Policy" Margin="0,10,0,0">
+                            <StackPanel Margin="10">
+                                <CheckBox x:Name="RequireRemoteAuth"
+                                          Content="Require authentication for all remote connections"
+                                          IsChecked="True" Margin="0,0,0,6"
+                                          ToolTip="If unchecked, any remote IP can connect without credentials."/>
+                                <CheckBox x:Name="TrustOnFirstUse"
+                                          Content="Trust on first use (show approval dialog for unknown clients)"
+                                          IsChecked="True" Margin="0,0,0,6"
+                                          ToolTip="Show a 30-second approval dialog when an unknown remote client connects. Approved clients are remembered."/>
+                                <TextBlock Text="Local automation (127.0.0.1) is always allowed without prompts."
+                                           Foreground="#0078D4" FontStyle="Italic" FontSize="11" Margin="0,0,0,8"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="130"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Bearer Token:" VerticalAlignment="Center"
+                                               ToolTip="Pre-shared token for clients that can supply it (bypasses approval dialog)"/>
+                                    <TextBox Grid.Column="1" x:Name="AuthTokenBox" FontFamily="Consolas"
+                                             ToolTip="Clients that send this token are auto-approved (leave blank to disable token auth)"/>
+                                    <Button Grid.Column="2" Content="Generate" Margin="6,0,0,0"
+                                            Click="GenerateAuthToken_Click" Padding="8,2"
+                                            ToolTip="Generate a random 32-character token"/>
+                                </Grid>
+                                <Separator Margin="0,10,0,6"/>
+                                <TextBlock Text="Trusted Clients" FontWeight="Bold" Margin="0,0,0,4"/>
+                                <ListView x:Name="TrustedClientsList" Height="100" SelectionMode="Single">
+                                    <ListView.View>
+                                        <GridView>
+                                            <GridViewColumn Header="IP Address" Width="140" DisplayMemberBinding="{Binding IP}"/>
+                                            <GridViewColumn Header="Trusted Until" Width="160" DisplayMemberBinding="{Binding ExpiryDisplay}"/>
+                                        </GridView>
+                                    </ListView.View>
+                                </ListView>
+                                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                    <Button Content="Revoke Selected" Click="RevokeTrusted_Click" Padding="10,3"/>
+                                    <Button Content="Revoke All" Click="RevokeAllTrusted_Click" Padding="10,3" Margin="8,0,0,0"/>
+                                    <Button Content="Refresh" Click="RefreshTrusted_Click" Padding="10,3" Margin="8,0,0,0"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </GroupBox>
+
                         <!-- IP Allowlist -->
                         <GroupBox Header="IP Allowlist (one IP or CIDR per line; empty = allow all)" Margin="0,10,0,0">
                             <StackPanel Margin="10">
