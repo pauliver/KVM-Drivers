@@ -7,13 +7,16 @@
 #include <cstring>
 #include <zlib.h>
 #include <bcrypt.h>
+#include <d3d11.h>
+#include <dxgi1_2.h>
 #include "vnc_tls.h"
 #include "../../../common/adaptive_quality.h"
 #include "../../core/driver_interface.h"
 
 #pragma comment(lib, "bcrypt.lib")
-
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
 
 namespace KVMDrivers {
 namespace Remote {
@@ -181,6 +184,29 @@ static bool RecvAll(SOCKET s, char* buf, int len) {
     return true;
 }
 
+// Per-thread TLS context (set for AnonTLS connections, null otherwise)
+static thread_local TlsSocket* t_tls = nullptr;
+
+// TLS-aware send: routes through TLS when active, otherwise plain send
+static int VncSend(SOCKET s, const void* buf, int len, int /*flags*/ = 0) {
+    if (t_tls) return t_tls->Send(buf, len) ? len : SOCKET_ERROR;
+    return send(s, static_cast<const char*>(buf), len, 0);
+}
+
+// TLS-aware recv: routes through TLS when active, otherwise plain RecvAll
+static bool VncRecvAll(SOCKET s, char* buf, int len) {
+    if (t_tls) {
+        int received = 0;
+        while (received < len) {
+            int r = t_tls->Recv(buf + received, len - received);
+            if (r <= 0) return false;
+            received += r;
+        }
+        return true;
+    }
+    return RecvAll(s, buf, len);
+}
+
 // Per-client input state (tracked per thread, no shared state needed)
 struct ClientInputState {
     UCHAR lastButtonMask = 0;  // Tracks button transitions
@@ -294,6 +320,7 @@ public:
         }
 
         running_ = true;
+        StartCapture();
         acceptThread_ = std::thread(&VncServerImpl::AcceptLoop, this);
         return true;
     }
@@ -323,6 +350,7 @@ public:
             clientThreads_.clear();
         }
         
+        StopCapture();
         WSACleanup();
     }
 
@@ -356,6 +384,164 @@ private:
     // AnonTLS
     bool             tlsEnabled_;
     PCCERT_CONTEXT   tlsCert_;
+
+    // DXGI Desktop Duplication capture
+    ID3D11Device*            d3dDevice_    = nullptr;
+    ID3D11DeviceContext*     d3dContext_   = nullptr;
+    IDXGIOutputDuplication*  deskDupl_     = nullptr;
+    std::thread              captureThread_;
+    std::atomic<bool>        captureRunning_{false};
+
+    bool InitCapture() {
+        D3D_FEATURE_LEVEL featureLevels[] = {
+            D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0
+        };
+        D3D_FEATURE_LEVEL obtained;
+        HRESULT hr = D3D11CreateDevice(
+            nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            featureLevels, ARRAYSIZE(featureLevels),
+            D3D11_SDK_VERSION,
+            &d3dDevice_, &obtained, &d3dContext_);
+        if (FAILED(hr)) {
+            std::cerr << "[VNC] D3D11CreateDevice failed: 0x" << std::hex << hr << std::dec << std::endl;
+            return false;
+        }
+
+        IDXGIDevice*  dxgiDev    = nullptr;
+        IDXGIAdapter* dxgiAdapt  = nullptr;
+        IDXGIOutput*  dxgiOut    = nullptr;
+        IDXGIOutput1* dxgiOut1   = nullptr;
+
+        d3dDevice_->QueryInterface(__uuidof(IDXGIDevice),  (void**)&dxgiDev);
+        dxgiDev->GetAdapter(&dxgiAdapt);
+        dxgiAdapt->EnumOutputs(0, &dxgiOut);
+        hr = dxgiOut->QueryInterface(__uuidof(IDXGIOutput1), (void**)&dxgiOut1);
+
+        if (SUCCEEDED(hr)) {
+            hr = dxgiOut1->DuplicateOutput(d3dDevice_, &deskDupl_);
+            dxgiOut1->Release();
+        }
+
+        if (dxgiOut)   dxgiOut->Release();
+        if (dxgiAdapt) dxgiAdapt->Release();
+        if (dxgiDev)   dxgiDev->Release();
+
+        if (FAILED(hr)) {
+            std::cerr << "[VNC] DuplicateOutput failed: 0x" << std::hex << hr << std::dec << std::endl;
+            return false;
+        }
+
+        // Resize framebuffer to match the actual output dimensions
+        DXGI_OUTDUPL_DESC dd;
+        deskDupl_->GetDesc(&dd);
+        {
+            std::lock_guard<std::mutex> lk(framebufferMutex_);
+            framebufferWidth_  = (int)dd.ModeDesc.Width;
+            framebufferHeight_ = (int)dd.ModeDesc.Height;
+            framebuffer_.assign((size_t)framebufferWidth_ * framebufferHeight_ * 4, 0);
+        }
+
+        std::cout << "[VNC] DXGI capture: "
+                  << framebufferWidth_ << "x" << framebufferHeight_ << std::endl;
+        return true;
+    }
+
+    void CaptureLoop() {
+        // Staging texture for CPU readback
+        ID3D11Texture2D* stagingTex = nullptr;
+
+        while (captureRunning_) {
+            // Re-initialise duplication after access-lost
+            if (!deskDupl_) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                InitCapture();
+                continue;
+            }
+
+            IDXGIResource*      res   = nullptr;
+            DXGI_OUTDUPL_FRAME_INFO fi  = {};
+            HRESULT hr = deskDupl_->AcquireNextFrame(100, &fi, &res);
+
+            if (hr == DXGI_ERROR_WAIT_TIMEOUT) continue;
+
+            if (hr == DXGI_ERROR_ACCESS_LOST) {
+                deskDupl_->Release(); deskDupl_ = nullptr;
+                if (stagingTex) { stagingTex->Release(); stagingTex = nullptr; }
+                continue;
+            }
+
+            if (FAILED(hr)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                continue;
+            }
+
+            // Get GPU texture
+            ID3D11Texture2D* gpuTex = nullptr;
+            res->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&gpuTex);
+
+            if (gpuTex) {
+                // Create or recreate staging texture
+                D3D11_TEXTURE2D_DESC desc;
+                gpuTex->GetDesc(&desc);
+
+                if (!stagingTex) {
+                    desc.Usage          = D3D11_USAGE_STAGING;
+                    desc.BindFlags      = 0;
+                    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                    desc.MiscFlags      = 0;
+                    d3dDevice_->CreateTexture2D(&desc, nullptr, &stagingTex);
+                }
+
+                if (stagingTex) {
+                    d3dContext_->CopyResource(stagingTex, gpuTex);
+
+                    D3D11_MAPPED_SUBRESOURCE mapped;
+                    if (SUCCEEDED(d3dContext_->Map(stagingTex, 0,
+                            D3D11_MAP_READ, 0, &mapped))) {
+                        std::lock_guard<std::mutex> lk(framebufferMutex_);
+                        int w = framebufferWidth_;
+                        int h = framebufferHeight_;
+                        const BYTE* src = reinterpret_cast<const BYTE*>(mapped.pData);
+                        BYTE*       dst = reinterpret_cast<BYTE*>(framebuffer_.data());
+                        UINT rowBytes = (UINT)w * 4;
+                        for (int row = 0; row < h; row++) {
+                            memcpy(dst + (size_t)row * rowBytes,
+                                   src + (size_t)row * mapped.RowPitch,
+                                   rowBytes);
+                        }
+                        d3dContext_->Unmap(stagingTex, 0);
+                    }
+                }
+                gpuTex->Release();
+            }
+
+            res->Release();
+            deskDupl_->ReleaseFrame();
+
+            // Target ~30 fps for capture (VNC clients request updates individually)
+            std::this_thread::sleep_for(std::chrono::milliseconds(33));
+        }
+
+        if (stagingTex) { stagingTex->Release(); stagingTex = nullptr; }
+    }
+
+    void StartCapture() {
+        if (!InitCapture()) {
+            std::cerr << "[VNC] DXGI capture unavailable; framebuffer will remain black" << std::endl;
+            return;
+        }
+        captureRunning_ = true;
+        captureThread_ = std::thread(&VncServerImpl::CaptureLoop, this);
+    }
+
+    void StopCapture() {
+        captureRunning_ = false;
+        if (captureThread_.joinable()) captureThread_.join();
+        if (deskDupl_)  { deskDupl_->Release();  deskDupl_   = nullptr; }
+        if (d3dContext_){ d3dContext_->Release(); d3dContext_ = nullptr; }
+        if (d3dDevice_) { d3dDevice_->Release();  d3dDevice_  = nullptr; }
+    }
 
     void AcceptLoop() {
         while (running_) {
@@ -408,14 +594,14 @@ private:
 
         // RFB 3.8 Handshake
         const char version[] = "RFB 003.008\n";
-        if (send(clientSocket, version, 12, 0) != 12) {
+        if (VncSend(clientSocket, version, 12) != 12) {
             std::cerr << "[VNC] Failed to send version to " << clientIP << std::endl;
             goto cleanup;
         }
 
         {
             char clientVersion[13] = {};
-            if (!RecvAll(clientSocket, clientVersion, 12)) {
+            if (!VncRecvAll(clientSocket, clientVersion, 12)) {
                 std::cerr << "[VNC] Client " << clientIP << " disconnected during version exchange" << std::endl;
                 goto cleanup;
             }
@@ -431,15 +617,15 @@ private:
             if (secList.empty())             secList.push_back((char)RFB::SecTypeNone);
 
             char nTypes = (char)secList.size();
-            send(clientSocket, &nTypes, 1, 0);
-            send(clientSocket, secList.data(), (int)secList.size(), 0);
+            VncSend(clientSocket, &nTypes, 1);
+            VncSend(clientSocket, secList.data(), (int)secList.size());
 
             char clientChoice;
-            if (!RecvAll(clientSocket, &clientChoice, 1)) goto cleanup;
+            if (!VncRecvAll(clientSocket, &clientChoice, 1)) goto cleanup;
             std::cout << "[VNC] " << clientIP << " chose security type " << (int)clientChoice << std::endl;
 
             if (clientChoice == (char)RFB::SecTypeAnonTLS) {
-                // Upgrade socket to TLS, then loop back for inner auth
+                // Upgrade socket to TLS; all subsequent I/O goes through t_tls
                 auto* tls = new TlsSocket(clientSocket, tlsCert_);
                 if (!tls->ServerHandshake()) {
                     std::cerr << "[VNC] " << clientIP << " TLS handshake failed" << std::endl;
@@ -447,19 +633,27 @@ private:
                     goto cleanup;
                 }
                 std::cout << "[VNC] " << clientIP << " TLS established" << std::endl;
-                // After TLS, re-send inner security (VNCAuth or None)
-                // NOTE: inner RFB protocol now goes over tls->Send/Recv
-                // For simplicity, we send a SecurityResult OK and continue
-                UINT32 secStatus = 0;
-                tls->Send(&secStatus, 4);
-                // Continue handshake using TLS send/recv (full re-integration out of scope here)
-                // Store tls pointer and use it — for now we switch to unencrypted inner
-                // This is a placeholder; full inner-protocol TLS usage requires refactoring
-                // send/recv throughout HandleClient to use tls->Send/Recv
-                delete tls;
-                // TODO: propagate tls context through message loop
-                // Fallback: disconnect after TLS upgrade (indicates TLS is functional but inner not wired)
-                goto cleanup;
+                t_tls = tls;  // VncSend/VncRecvAll now route through TLS
+
+                // Re-send inner security type list over TLS channel
+                std::vector<char> innerSec;
+                if (!password_.empty()) innerSec.push_back((char)RFB::SecTypeVNCAuth);
+                else                    innerSec.push_back((char)RFB::SecTypeNone);
+                char nInner = (char)innerSec.size();
+                VncSend(clientSocket, &nInner, 1);
+                VncSend(clientSocket, innerSec.data(), (int)innerSec.size());
+
+                char innerChoice;
+                if (!VncRecvAll(clientSocket, &innerChoice, 1)) goto cleanup;
+
+                if (innerChoice == (char)RFB::SecTypeVNCAuth) {
+                    if (!DoVNCAuth(clientSocket)) goto cleanup;
+                } else {
+                    UINT32 secOk = 0;
+                    VncSend(clientSocket, &secOk, 4);
+                }
+                // Fall through to Client Init / Server Init / message loop
+                // (all subsequent calls use VncSend/VncRecvAll which route through t_tls)
             } else if (clientChoice == (char)RFB::SecTypeVNCAuth) {
                 std::cout << "[VNC] " << clientIP << " attempting VNCAuth" << std::endl;
                 if (!DoVNCAuth(clientSocket)) {
@@ -471,29 +665,29 @@ private:
                 // None (or unrecognised — send OK)
                 std::cout << "[VNC] " << clientIP << " no auth" << std::endl;
                 UINT32 secStatus = 0;
-                send(clientSocket, (char*)&secStatus, 4, 0);
+                VncSend(clientSocket, (char*)&secStatus, 4);
             }
 
             // Client init
             char shared;
-            if (!RecvAll(clientSocket, &shared, 1)) goto cleanup;
+            if (!VncRecvAll(clientSocket, &shared, 1)) goto cleanup;
             std::cout << "[VNC] Client init, shared=" << (int)shared << std::endl;
 
             // Server init
             UINT16 width = htons((u_short)framebufferWidth_);
             UINT16 height = htons((u_short)framebufferHeight_);
-            send(clientSocket, (char*)&width, 2, 0);
-            send(clientSocket, (char*)&height, 2, 0);
+            VncSend(clientSocket, (char*)&width, 2);
+            VncSend(clientSocket, (char*)&height, 2);
 
             // Pixel format (32-bit BGRX)
             char pixelFormat[16] = { 32, 24, 0, 1, 0, 0, 255, 255, 255, 16, 8, 0, 0, 0, 0 };
-            send(clientSocket, pixelFormat, 16, 0);
+            VncSend(clientSocket, pixelFormat, 16);
 
             // Desktop name
             const char name[] = "KVM-Drivers VNC";
             UINT32 nameLen = htonl((u_long)strlen(name));
-            send(clientSocket, (char*)&nameLen, 4, 0);
-            send(clientSocket, name, (int)strlen(name), 0);
+            VncSend(clientSocket, (char*)&nameLen, 4);
+            VncSend(clientSocket, name, (int)strlen(name));
             std::cout << "[VNC] Handshake complete with " << clientIP << std::endl;
 
             // Per-client input state (local to this thread - no locking needed)
@@ -502,7 +696,7 @@ private:
             // Main message loop
             while (running_) {
                 char msgType;
-                if (!RecvAll(clientSocket, &msgType, 1)) break;
+                if (!VncRecvAll(clientSocket, &msgType, 1)) break;
 
                 switch ((RFB::ClientMsgType)msgType) {
                 case RFB::ClientSetPixelFormat:
@@ -530,6 +724,8 @@ private:
 
         cleanup_inner:;
         cleanup:
+        // Clean up per-thread TLS context if this was an AnonTLS connection
+        if (t_tls) { delete t_tls; t_tls = nullptr; }
         std::cout << "[VNC] Client disconnected: " << clientIP << ":" << clientPort << std::endl;
         connectionCount_--;
         closesocket(clientSocket);
@@ -690,7 +886,7 @@ private:
                     }
                 }
 
-                send(sock, (char*)tileBuf.data(), (int)tileBuf.size(), 0);
+                VncSend(sock, (char*)tileBuf.data(), (int)tileBuf.size());
             }
         }
     }
@@ -706,11 +902,11 @@ private:
         }
 
         // Send challenge to client
-        send(sock, (char*)challenge, 16, 0);
+        VncSend(sock, (char*)challenge, 16);
 
         // Receive client's 16-byte DES-encrypted response
         UINT8 response[16];
-        if (!RecvAll(sock, (char*)response, 16)) {
+        if (!VncRecvAll(sock, (char*)response, 16)) {
             std::cerr << "[VNC] Failed to receive auth response" << std::endl;
             return false;
         }
@@ -723,14 +919,14 @@ private:
 
         // Send security result: 0 = OK, 1 = failed
         UINT32 result = htonl(authOk ? 0u : 1u);
-        send(sock, (char*)&result, 4, 0);
+        VncSend(sock, (char*)&result, 4);
 
         if (!authOk) {
             // RFB 3.8: send failure reason string
             const char reason[] = "Authentication failed";
             UINT32 len = htonl((u_long)strlen(reason));
-            send(sock, (char*)&len, 4, 0);
-            send(sock, reason, (int)strlen(reason), 0);
+            VncSend(sock, (char*)&len, 4);
+            VncSend(sock, reason, (int)strlen(reason));
         }
 
         return authOk;
@@ -738,16 +934,16 @@ private:
 
     void HandleSetPixelFormat(SOCKET sock) {
         char buf[19];  // 3 padding + 16 pixel format bytes
-        if (!RecvAll(sock, buf, 19)) return;
+        if (!VncRecvAll(sock, buf, 19)) return;
         std::cout << "[VNC] SetPixelFormat received" << std::endl;
     }
 
     void HandleSetEncodings(SOCKET sock) {
         char padding;
-        if (!RecvAll(sock, &padding, 1)) return;
+        if (!VncRecvAll(sock, &padding, 1)) return;
 
         UINT16 numEncodingsNet;
-        if (!RecvAll(sock, (char*)&numEncodingsNet, 2)) return;
+        if (!VncRecvAll(sock, (char*)&numEncodingsNet, 2)) return;
         UINT16 numEncodings = ntohs(numEncodingsNet);
 
         // CRITICAL: consume ALL encoding entries to keep protocol in sync
@@ -756,7 +952,7 @@ private:
         encodings.reserve(numEncodings);
         for (int i = 0; i < (int)numEncodings; i++) {
             INT32 enc;
-            if (!RecvAll(sock, (char*)&enc, 4)) return;
+            if (!VncRecvAll(sock, (char*)&enc, 4)) return;
             encodings.push_back(ntohl(enc));
         }
 
@@ -773,11 +969,11 @@ private:
     void HandleUpdateRequest(SOCKET sock) {
         char incremental;
         UINT16 x, y, w, h;
-        if (!RecvAll(sock, &incremental, 1)) return;
-        if (!RecvAll(sock, (char*)&x, 2)) return;
-        if (!RecvAll(sock, (char*)&y, 2)) return;
-        if (!RecvAll(sock, (char*)&w, 2)) return;
-        if (!RecvAll(sock, (char*)&h, 2)) return;
+        if (!VncRecvAll(sock, &incremental, 1)) return;
+        if (!VncRecvAll(sock, (char*)&x, 2)) return;
+        if (!VncRecvAll(sock, (char*)&y, 2)) return;
+        if (!VncRecvAll(sock, (char*)&w, 2)) return;
+        if (!VncRecvAll(sock, (char*)&h, 2)) return;
 
         x = ntohs(x); y = ntohs(y);
         w = ntohs(w); h = ntohs(h);
@@ -816,7 +1012,7 @@ private:
 
         // Send framebuffer update header
         char header[4] = { 0, 0, 0, 1 };  // type=0, padding=0, nRects=1
-        send(sock, header, 4, 0);
+        VncSend(sock, header, 4);
 
         // Rectangle header
         UINT16 rectX = htons(x);
@@ -825,11 +1021,11 @@ private:
         UINT16 rectH = htons(h);
         INT32 encoding = htonl(useHextile ? RFB::EncodingHextile : RFB::EncodingRaw);
 
-        send(sock, (char*)&rectX, 2, 0);
-        send(sock, (char*)&rectY, 2, 0);
-        send(sock, (char*)&rectW, 2, 0);
-        send(sock, (char*)&rectH, 2, 0);
-        send(sock, (char*)&encoding, 4, 0);
+        VncSend(sock, (char*)&rectX, 2);
+        VncSend(sock, (char*)&rectY, 2);
+        VncSend(sock, (char*)&rectW, 2);
+        VncSend(sock, (char*)&rectH, 2);
+        VncSend(sock, (char*)&encoding, 4);
 
         {
             std::lock_guard<std::mutex> lock(framebufferMutex_);
@@ -839,10 +1035,10 @@ private:
                 // Raw encoding
                 size_t srcOffset = ((size_t)y * framebufferWidth_ + x) * 4;
                 if (srcOffset + dataSize <= framebuffer_.size()) {
-                    send(sock, framebuffer_.data() + srcOffset, (int)dataSize, 0);
+                    VncSend(sock, framebuffer_.data() + srcOffset, (int)dataSize);
                 } else {
                     std::vector<char> black(dataSize, 0);
-                    send(sock, black.data(), (int)dataSize, 0);
+                    VncSend(sock, black.data(), (int)dataSize);
                 }
             }
         }
@@ -862,9 +1058,9 @@ private:
         char down;
         char padding[2];
         UINT32 keysym;
-        if (!RecvAll(sock, &down, 1)) return;
-        if (!RecvAll(sock, padding, 2)) return;
-        if (!RecvAll(sock, (char*)&keysym, 4)) return;
+        if (!VncRecvAll(sock, &down, 1)) return;
+        if (!VncRecvAll(sock, padding, 2)) return;
+        if (!VncRecvAll(sock, (char*)&keysym, 4)) return;
         keysym = ntohl(keysym);
 
         UINT32 vk = KeySymMapper::X11ToWindows(keysym);
@@ -892,9 +1088,9 @@ private:
     void HandlePointerEvent(SOCKET sock, ClientInputState& state) {
         char buttonMaskByte;
         UINT16 x, y;
-        if (!RecvAll(sock, &buttonMaskByte, 1)) return;
-        if (!RecvAll(sock, (char*)&x, 2)) return;
-        if (!RecvAll(sock, (char*)&y, 2)) return;
+        if (!VncRecvAll(sock, &buttonMaskByte, 1)) return;
+        if (!VncRecvAll(sock, (char*)&x, 2)) return;
+        if (!VncRecvAll(sock, (char*)&y, 2)) return;
         x = ntohs(x); y = ntohs(y);
         UCHAR buttonMask = (UCHAR)buttonMaskByte;
 
