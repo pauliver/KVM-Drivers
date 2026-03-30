@@ -3,8 +3,9 @@
 This document outlines the phased development approach for building the KVM-Drivers computer piloting system. Each milestone builds upon previous work, with deliverables that can be tested and validated independently.
 
 > **Last Updated:** March 30, 2026  
-> **Current Phase:** Release Candidate v2 — Full wiring + audit pass complete (Mar 2026).  
-> All dead code removed, every functional stub implemented, per-vendor HW encoding wired, kernel drivers corrected, performance + security hardened. Only remaining item: WHQL EV cert purchase.
+> **Current Phase:** Release Candidate v3 — All known gaps implemented (Mar 2026).  
+> VHF-based kernel HID injection for keyboard + gamepad, OpenH264 software H.264 fallback, KVM branded icon throughout tray.  
+> Only remaining item: WHQL EV cert purchase.
 
 ---
 
@@ -508,11 +509,21 @@ This document outlines the phased development approach for building the KVM-Driv
 | WS security | `RecvExact` helper added to both servers; 16 MB frame-size limit prevents OOM from malformed frames |
 | SubmitTestFrame | Added `VideoPipeline::SubmitTestFrame()` called by `IddVideoBridge::CaptureLoop` |
 
-### Remaining Items (known)
-- VHF (Virtual HID Framework) kernel path for keyboard — currently uses `SendInput` fallback
-- Full XInput bus enumeration for `vxinput` (controller shows in XUSB format but not enumerated as XInput device yet)
-- Software H.264 encoder (x264/OpenH264) for WAN streaming without GPU
-- WHQL EV certificate purchase
+### Remaining Items
+- WHQL EV certificate purchase (all other known gaps are resolved)
+
+---
+
+## Milestone 12: Gap Completions + Branding (RC v3)
+
+**Completed:** March 30, 2026
+
+| Gap | Implementation |
+|-----|---------------|
+| vhidkb VHF kernel injection | `VhfCreate` + boot-keyboard HID descriptor + `VhfReadReportSubmit`; `STATUS_DEVICE_NOT_READY` if VHF not ready → `SendInput` fallback |
+| vxinput XInput-compatible gamepad | VHF HID gamepad (VID 045E/PID 028E Xbox 360); XUSB→HID 13-byte report conversion via `VhfReadReportSubmit` |
+| Software H.264 encoder | `openh264_encoder.cpp` — runtime-loads `openh264.dll`; NV12→I420 deinterleave; wired into `encoder_manager.cpp` `EncoderType::Software` path |
+| KVM branded icon | `docs/logo.ico` → `src/tray/Resources/KVM.ico`; wired into `App.xaml` `TaskbarIcon`, `MainWindow.xaml` `Window.Icon`, `tray.csproj` `ApplicationIcon`, `TrayIcon.cpp`; minimize-to-tray added |
 
 ---
 

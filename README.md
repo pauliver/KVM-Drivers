@@ -2,7 +2,7 @@
 
 A Windows-based computer "piloting" system for remote management, remote control, and automated testing using virtual input/output devices that are indistinguishable from physical hardware.
 
-> **Status: Release Candidate v2** — Full end-to-end wiring audit completed (Mar 2026). All dead code removed, all functional stubs implemented, per-vendor hardware encoding wired, kernel driver stubs corrected, performance hardened. Only remaining item: WHQL EV cert purchase.
+> **Status: Release Candidate v3** — All known gaps implemented (Mar 2026): VHF-based kernel HID injection (keyboard + gamepad), OpenH264 software H.264 fallback, KVM icon wired throughout tray. Only remaining item: WHQL EV cert purchase.
 
 ---
 
@@ -10,11 +10,11 @@ A Windows-based computer "piloting" system for remote management, remote control
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| **vhidkb** — Virtual Keyboard | ✅ Functional | Kernel filter wired; injects via `SendInput` fallback (HID stack path planned via VHF) |
+| **vhidkb** — Virtual Keyboard | ✅ Functional | VHF kernel injection (`VhfCreate`+`VhfReadReportSubmit`); boot-keyboard HID descriptor; `SendInput` fallback if VHF unavailable |
 | **vhidmouse** — Virtual Mouse | ✅ Functional | Relative + absolute movement, all buttons, scroll |
-| **vxinput** — Xbox Controller | ✅ Functional | IOCTL queue wired; stores XUSB report; full XInput bus in next phase |
+| **vxinput** — Xbox Controller | ✅ Functional | VHF HID gamepad (VID 045E/PID 028E); XUSB→HID report conversion; XInput-compatible |
 | **vdisplay** — Virtual Display | ✅ Functional | IDD, multi-res; `SharedTextureHandle` published from `FinishFrameProcessing` |
-| **Hardware Video Encoding** | ✅ Functional | BGRA→NV12 conversion + NVENC/AMF/QSV hardware path; raw passthrough fallback |
+| **Hardware Video Encoding** | ✅ Functional | BGRA→NV12 + NVENC/AMF/QSV hardware path; OpenH264 software fallback (NV12→I420); raw passthrough if DLL absent |
 | **WebSocket Server (async)** | ✅ Functional | Non-blocking, select(), 16 MB frame limit, `RecvExact` safety |
 | **WebSocket Server (sync)** | ✅ Functional | Thread-per-client, 30 s timeouts, `RecvExact`, 16 MB limit |
 | **VNC Server (RFB 3.8)** | ✅ Functional | Auth (DES/BCrypt), Hextile, X11 keysym, AnonTLS; DXGI framebuffer; dynamic resize |
@@ -23,7 +23,7 @@ A Windows-based computer "piloting" system for remote management, remote control
 | **C++ Automation Framework** | ✅ Functional | Plugin arch, `HandleMouseDrag`, screenshot-on-failure, GDI+ capture |
 | **C# .NET Wrapper** | ✅ Functional | P/Invoke interop, fluent API |
 | **Game Automation Extensions** | ✅ Functional | App launcher, UI automation, OCR, smart click |
-| **System Tray Application** | ✅ Functional | WPF, Start/Stop/Restart wired to Windows SCM, Diagnostics tab |
+| **System Tray Application** | ✅ Functional | WPF, branded KVM icon throughout (`TaskbarIcon`, window, `.exe`), Start/Stop/Restart→SCM, minimize-to-tray |
 | **Unified Logging** | ✅ Functional | Lock-free ring buffer; kernel ETW (`EtwWrite`) now implemented |
 | **Performance Monitor** | ✅ Functional | Hitch detection, latency tracking |
 | **Adaptive Quality** | ✅ Functional | 5-tier FPS scaling (60→5) on load/latency |
@@ -32,7 +32,7 @@ A Windows-based computer "piloting" system for remote management, remote control
 | **ETW Audit Logging** | ✅ Functional | Per-connection events, cert pinning, IP allowlist, mutual auth |
 | **M8 Diagnostics** | ✅ Functional | Driver health checks, self-repair, audit log viewer |
 | **72-hour Stress Test** | ✅ Framework | Watchdog, memory monitor, p50/p95/p99 latency, JSON results |
-| **Full Wiring Audit** | ✅ Complete | Phase 1-5 audit: dead code removed, all stubs implemented, perf + security hardened |
+| **Full Wiring Audit** | ✅ Complete | Phase 1-5 + gaps: dead code removed, all stubs implemented, VHF drivers, OpenH264, icon |
 | **WHQL Prep** | ✅ Documented | Cert guide, signing scripts ready |
 
 ---
