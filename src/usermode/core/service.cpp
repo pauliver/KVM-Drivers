@@ -1,6 +1,11 @@
 // service.cpp - Windows Service Implementation for KVMService
 #include "service.h"
 #include <iostream>
+#include "../remote/native/websocket_server_async.h"
+#include "../remote/vnc/vnc_server.h"
+
+static void* g_wsServer  = nullptr;
+static KVMDrivers::Remote::VNCServer* g_vncServer = nullptr;
 
 SERVICE_STATUS g_ServiceStatus = { 0 };
 SERVICE_STATUS_HANDLE g_StatusHandle = NULL;
@@ -138,23 +143,55 @@ VOID UninstallService() {
 }
 
 BOOL InitializeDriverInterface() {
-    // TODO: Open handles to drivers (\\.\\vhidkb, \\.\\vhidmouse, etc.)
+    // Each server manages its own DriverInterface; nothing global needed here.
     return TRUE;
 }
 
 VOID CleanupDriverInterface() {
-    // TODO: Close driver handles
+    // Servers own their DriverInterface instances; cleaned up in StopProtocolServers.
 }
 
 BOOL StartProtocolServers() {
-    // TODO: Start WebSocket and VNC servers
+    // --- Async WebSocket server (JSON-RPC input injection, port 8443) ---
+    g_wsServer = WsAsync_Create(8443);
+    if (!g_wsServer || !WsAsync_Start(g_wsServer)) {
+        std::wcerr << L"[Service] Failed to start WebSocket server on port 8443" << std::endl;
+        if (g_wsServer) { WsAsync_Destroy(g_wsServer); g_wsServer = nullptr; }
+        return FALSE;
+    }
+    std::wcout << L"[Service] WebSocket server started on port 8443" << std::endl;
+
+    // --- VNC server (RFB 3.8, port 5900) ---
+    g_vncServer = new KVMDrivers::Remote::VNCServer();
+    if (!g_vncServer->Start()) {
+        std::wcerr << L"[Service] Failed to start VNC server on port 5900 (non-fatal)" << std::endl;
+        delete g_vncServer;
+        g_vncServer = nullptr;
+        // Non-fatal: service still operates via WebSocket
+    } else {
+        std::wcout << L"[Service] VNC server started on port 5900" << std::endl;
+    }
+
     return TRUE;
 }
 
 VOID StopProtocolServers() {
-    // TODO: Stop protocol servers
+    if (g_wsServer) {
+        WsAsync_Stop(g_wsServer);
+        WsAsync_Destroy(g_wsServer);
+        g_wsServer = nullptr;
+        std::wcout << L"[Service] WebSocket server stopped" << std::endl;
+    }
+    if (g_vncServer) {
+        g_vncServer->Stop();
+        delete g_vncServer;
+        g_vncServer = nullptr;
+        std::wcout << L"[Service] VNC server stopped" << std::endl;
+    }
 }
 
 VOID ProcessServiceTasks() {
-    // TODO: Process pending operations
+    // Lightweight 100ms tick: currently no pending background tasks.
+    // Connection approval polling is handled inside ConnectionAuthGate::Evaluate()
+    // which blocks its own accept thread; no action needed here.
 }
