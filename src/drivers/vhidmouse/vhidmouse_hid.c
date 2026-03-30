@@ -239,22 +239,62 @@ NTSTATUS vhidmouseSubmitHidReport(_In_ WDFDEVICE Device, _In_ SHORT X, _In_ SHOR
     return STATUS_SUCCESS;
 }
 
+// Validate IOCTL buffer with comprehensive checks
+static NTSTATUS ValidateMouseIoctlBuffer(
+    _In_ WDFREQUEST Request,
+    _In_ size_t ExpectedSize,
+    _Out_ PVOID* Buffer,
+    _Out_ size_t* ActualSize
+)
+{
+    NTSTATUS status;
+    
+    if (ExpectedSize == 0) {
+        *Buffer = NULL;
+        *ActualSize = 0;
+        return STATUS_SUCCESS;
+    }
+    
+    status = WdfRequestRetrieveInputBuffer(Request, ExpectedSize, Buffer, ActualSize);
+    
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("vhidmouse: Buffer retrieval failed: 0x%X\n", status));
+        return status;
+    }
+    
+    if (*ActualSize < ExpectedSize) {
+        KdPrint(("vhidmouse: Buffer too small: %zu < %zu\n", *ActualSize, ExpectedSize));
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    
+    return STATUS_SUCCESS;
+}
+
 // IOCTL handlers
 VOID vhidmouseEvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request,
     _In_ size_t OutputBufferLength, _In_ size_t InputBufferLength, _In_ ULONG IoControlCode) {
     UNREFERENCED_PARAMETER(OutputBufferLength);
-    UNREFERENCED_PARAMETER(InputBufferLength);
 
     NTSTATUS status = STATUS_SUCCESS;
     WDFDEVICE device = WdfIoQueueGetDevice(Queue);
+
+    // Log IOCTL for debugging
+    KdPrint(("vhidmouse: IOCTL 0x%X, InputLen=%zu\n", IoControlCode, InputBufferLength));
 
     switch (IoControlCode) {
     case IOCTL_VMOUSE_MOVE_RELATIVE: {
         PVMOUSE_MOVE_DATA data;
         size_t size;
-        status = WdfRequestRetrieveInputBuffer(Request, sizeof(VMOUSE_MOVE_DATA), (PVOID*)&data, &size);
+        if (InputBufferLength < sizeof(VMOUSE_MOVE_DATA)) {
+            KdPrint(("vhidmouse: MOVE_REL buffer too small\n"));
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        status = ValidateMouseIoctlBuffer(Request, sizeof(VMOUSE_MOVE_DATA), (PVOID*)&data, &size);
         if (NT_SUCCESS(status)) {
-            vhidmouseSubmitHidReport(device, (SHORT)data->X, (SHORT)data->Y, 0, 0, 0);
+            status = vhidmouseSubmitHidReport(device, (SHORT)data->X, (SHORT)data->Y, 0, 0, 0);
+            KdPrint(("vhidmouse: Move rel (%d,%d) %s\n", data->X, data->Y, 
+                NT_SUCCESS(status) ? "OK" : "FAIL"));
         }
         break;
     }
@@ -262,12 +302,18 @@ VOID vhidmouseEvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request,
     case IOCTL_VMOUSE_MOVE_ABSOLUTE: {
         PVMOUSE_ABSOLUTE_DATA data;
         size_t size;
-        status = WdfRequestRetrieveInputBuffer(Request, sizeof(VMOUSE_ABSOLUTE_DATA), (PVOID*)&data, &size);
+        if (InputBufferLength < sizeof(VMOUSE_ABSOLUTE_DATA)) {
+            KdPrint(("vhidmouse: MOVE_ABS buffer too small\n"));
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        status = ValidateMouseIoctlBuffer(Request, sizeof(VMOUSE_ABSOLUTE_DATA), (PVOID*)&data, &size);
         if (NT_SUCCESS(status)) {
-            // Convert absolute to relative (simplified - would track last position)
-            SHORT relX = (SHORT)(data->X / 10);  // Simplified scaling
+            SHORT relX = (SHORT)(data->X / 10);
             SHORT relY = (SHORT)(data->Y / 10);
-            vhidmouseSubmitHidReport(device, relX, relY, 0, 0, 0);
+            status = vhidmouseSubmitHidReport(device, relX, relY, 0, 0, 0);
+            KdPrint(("vhidmouse: Move abs (%d,%d) %s\n", data->X, data->Y,
+                NT_SUCCESS(status) ? "OK" : "FAIL"));
         }
         break;
     }
@@ -276,7 +322,12 @@ VOID vhidmouseEvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request,
         PVMOUSE_BUTTON_DATA data;
         size_t size;
         static UCHAR currentButtons = 0;
-        status = WdfRequestRetrieveInputBuffer(Request, sizeof(VMOUSE_BUTTON_DATA), (PVOID*)&data, &size);
+        if (InputBufferLength < sizeof(VMOUSE_BUTTON_DATA)) {
+            KdPrint(("vhidmouse: BUTTON buffer too small\n"));
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        status = ValidateMouseIoctlBuffer(Request, sizeof(VMOUSE_BUTTON_DATA), (PVOID*)&data, &size);
         if (NT_SUCCESS(status)) {
             UCHAR buttonMask = 0;
             switch (data->Button) {
@@ -296,9 +347,16 @@ VOID vhidmouseEvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request,
     case IOCTL_VMOUSE_SCROLL: {
         PVMOUSE_SCROLL_DATA data;
         size_t size;
-        status = WdfRequestRetrieveInputBuffer(Request, sizeof(VMOUSE_SCROLL_DATA), (PVOID*)&data, &size);
+        if (InputBufferLength < sizeof(VMOUSE_SCROLL_DATA)) {
+            KdPrint(("vhidmouse: SCROLL buffer too small\n"));
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        status = ValidateMouseIoctlBuffer(Request, sizeof(VMOUSE_SCROLL_DATA), (PVOID*)&data, &size);
         if (NT_SUCCESS(status)) {
-            vhidmouseSubmitHidReport(device, 0, 0, 0, (CHAR)data->Vertical, (CHAR)data->Horizontal);
+            status = vhidmouseSubmitHidReport(device, 0, 0, 0, (CHAR)data->Vertical, (CHAR)data->Horizontal);
+            KdPrint(("vhidmouse: Scroll (%d,%d) %s\n", data->Vertical, data->Horizontal,
+                NT_SUCCESS(status) ? "OK" : "FAIL"));
         }
         break;
     }

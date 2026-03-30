@@ -414,6 +414,46 @@ NTSTATUS vhidkbSubmitHidReport(
     return STATUS_SUCCESS;
 }
 
+// Validate IOCTL buffer with comprehensive checks
+static NTSTATUS ValidateIoctlBuffer(
+    _In_ WDFREQUEST Request,
+    _In_ size_t ExpectedSize,
+    _Out_ PVOID* Buffer,
+    _Out_ size_t* ActualSize
+)
+{
+    NTSTATUS status;
+    
+    if (ExpectedSize == 0) {
+        *Buffer = NULL;
+        *ActualSize = 0;
+        return STATUS_SUCCESS;
+    }
+    
+    status = WdfRequestRetrieveInputBuffer(Request, ExpectedSize, Buffer, ActualSize);
+    
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("vhidkb: Buffer retrieval failed: 0x%X\n", status));
+        return status;
+    }
+    
+    if (*ActualSize < ExpectedSize) {
+        KdPrint(("vhidkb: Buffer too small: %zu < %zu\n", *ActualSize, ExpectedSize));
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    
+    // Validate buffer is readable
+    __try {
+        volatile UCHAR test = ((PUCHAR)*Buffer)[0];
+        UNREFERENCED_PARAMETER(test);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        KdPrint(("vhidkb: Buffer access violation\n"));
+        return STATUS_ACCESS_VIOLATION;
+    }
+    
+    return STATUS_SUCCESS;
+}
+
 // IOCTL handler for key injection
 VOID vhidkbEvtIoDeviceControl(
     _In_ WDFQUEUE Queue,
@@ -424,7 +464,6 @@ VOID vhidkbEvtIoDeviceControl(
 )
 {
     UNREFERENCED_PARAMETER(OutputBufferLength);
-    UNREFERENCED_PARAMETER(InputBufferLength);
 
     NTSTATUS status = STATUS_SUCCESS;
     WDFDEVICE device;
@@ -433,9 +472,21 @@ VOID vhidkbEvtIoDeviceControl(
 
     device = WdfIoQueueGetDevice(Queue);
 
+    // Log IOCTL for debugging
+    KdPrint(("vhidkb: IOCTL 0x%X, InputLen=%zu\n", IoControlCode, InputBufferLength));
+
     switch (IoControlCode) {
     case IOCTL_VKB_INJECT_KEYDOWN:
-        status = WdfRequestRetrieveInputBuffer(Request, sizeof(VKB_INPUT_REPORT), (PVOID*)&inputReport, &bufferSize);
+        // Validate input buffer size first
+        if (InputBufferLength < sizeof(VKB_INPUT_REPORT)) {
+            KdPrint(("vhidkb: KEYDOWN buffer too small: %zu < %zu\n", 
+                InputBufferLength, sizeof(VKB_INPUT_REPORT)));
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        
+        status = ValidateIoctlBuffer(Request, sizeof(VKB_INPUT_REPORT), 
+            (PVOID*)&inputReport, &bufferSize);
         if (NT_SUCCESS(status)) {
             status = vhidkbSubmitHidReport(
                 device,
@@ -443,6 +494,11 @@ VOID vhidkbEvtIoDeviceControl(
                 inputReport->KeyCodes,
                 VKB_MAX_KEYS
             );
+            if (NT_SUCCESS(status)) {
+                KdPrint(("vhidkb: Key injected successfully\n"));
+            } else {
+                KdPrint(("vhidkb: Key injection failed: 0x%X\n", status));
+            }
         }
         break;
 
