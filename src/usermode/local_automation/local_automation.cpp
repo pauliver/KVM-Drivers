@@ -3,13 +3,17 @@
 // Usage: local_automation.exe --script tests/mytest.yaml
 
 #include <windows.h>
+#include <gdiplus.h>
 #include <iostream>
 #include <string>
 #include <vector>
 #include <thread>
 #include <chrono>
 #include <fstream>
+#include <sstream>
 #include <yaml-cpp/yaml.h>
+
+#pragma comment(lib, "gdiplus.lib")
 
 #include "../usermode/core/driver_interface.h"
 #include "../common/logging/unified_logger_user.h"
@@ -467,9 +471,61 @@ private:
     }
     
     bool TakeScreenshot(const std::string& filename) {
-        // TODO: Implement display capture
-        std::cout << "  Screenshot saved to: " << filename << "\n";
-        return true;
+        using namespace Gdiplus;
+
+        // Initialise GDI+ for this call
+        GdiplusStartupInput gpInput;
+        ULONG_PTR           gpToken = 0;
+        if (GdiplusStartup(&gpToken, &gpInput, NULL) != Ok) {
+            std::cerr << "  Screenshot: GDI+ init failed\n";
+            return false;
+        }
+
+        int w = GetSystemMetrics(SM_CXSCREEN);
+        int h = GetSystemMetrics(SM_CYSCREEN);
+
+        HDC     screenDC = GetDC(NULL);
+        HDC     memDC    = CreateCompatibleDC(screenDC);
+        HBITMAP hBmp     = CreateCompatibleBitmap(screenDC, w, h);
+        HBITMAP hOld     = (HBITMAP)SelectObject(memDC, hBmp);
+        BitBlt(memDC, 0, 0, w, h, screenDC, 0, 0, SRCCOPY);
+        SelectObject(memDC, hOld);
+
+        // Find PNG encoder CLSID
+        UINT   num = 0, sz = 0;
+        GetImageEncodersSize(&num, &sz);
+        std::vector<BYTE> buf(sz);
+        ImageCodecInfo* pInfo = reinterpret_cast<ImageCodecInfo*>(buf.data());
+        GetImageEncoders(num, sz, pInfo);
+
+        CLSID pngClsid = {};
+        bool  found    = false;
+        for (UINT i = 0; i < num; i++) {
+            if (wcscmp(pInfo[i].MimeType, L"image/png") == 0) {
+                pngClsid = pInfo[i].Clsid;
+                found = true;
+                break;
+            }
+        }
+
+        bool ok = false;
+        if (found) {
+            Bitmap bmp(hBmp, NULL);
+            std::wstring wf(filename.begin(), filename.end());
+            ok = (bmp.Save(wf.c_str(), &pngClsid, NULL) == Ok);
+        }
+
+        DeleteDC(memDC);
+        ReleaseDC(NULL, screenDC);
+        DeleteObject(hBmp);
+        GdiplusShutdown(gpToken);
+
+        if (ok) {
+            std::cout << "  Screenshot saved to: " << filename << "\n";
+        } else {
+            std::cerr << "  Screenshot failed: " << filename << "\n";
+        }
+        return ok;
     }
     
     // Interactive mode handlers
