@@ -20,6 +20,7 @@
 #include "../../common/logging/unified_logger.h"
 #include "../../common/performance/performance_monitor.h"
 #include "../../common/adaptive_quality.h"
+#include "../../common/connection_security.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "crypt32.lib")
@@ -321,6 +322,19 @@ private:
         u_long nonBlocking = 1;
         ioctlsocket(clientSocket, FIONBIO, &nonBlocking);
         
+        // Resolve client IP for security checks
+        char clientIP[INET_ADDRSTRLEN] = "unknown";
+        inet_ntop(AF_INET, &clientAddr.sin_addr, clientIP, INET_ADDRSTRLEN);
+
+        // IP allowlist enforcement via ConnectionSecurityContext
+        auto& sec = ConnectionSecurityContext::Global();
+        if (!sec.ValidateConnection(clientIP, "WebSocket")) {
+            LOG_WARNING(logger_, LOG_CATEGORY_SECURITY, "AsyncWebSocket",
+                "Connection rejected by IP allowlist: %s", clientIP);
+            closesocket(clientSocket);
+            return;
+        }
+
         // Find free slot
         int slot = -1;
         for (int i = 0; i < WS_MAX_CLIENTS; i++) {
@@ -329,14 +343,15 @@ private:
                 break;
             }
         }
-        
+
         if (slot == -1) {
-            LOG_WARNING(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket", 
-                "Too many clients, rejecting connection");
+            LOG_WARNING(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
+                "Too many clients, rejecting connection from %s", clientIP);
+            sec.auditLog.LogDisconnect(clientIP, "WebSocket", "max clients");
             closesocket(clientSocket);
             return;
         }
-        
+
         // Initialize client
         clients_[slot].socket = clientSocket;
         clients_[slot].address = clientAddr;
@@ -348,11 +363,8 @@ private:
         clients_[slot].inputCountLastSecond = 0;
         clients_[slot].messagesReceived = 0;
         clients_[slot].messagesSent = 0;
-        
-        char clientIP[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &clientAddr.sin_addr, clientIP, INET_ADDRSTRLEN);
-        
-        LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket", 
+
+        LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
             "Client %d connected from %s", slot, clientIP);
     }
     
@@ -549,10 +561,15 @@ private:
         }
 
         if (clients_[clientIndex].inputCountLastSecond > rateLimit) {
+            char clientIP[INET_ADDRSTRLEN] = "unknown";
+            inet_ntop(AF_INET, &clients_[clientIndex].address.sin_addr,
+                clientIP, INET_ADDRSTRLEN);
             LOG_WARNING(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
                 "Rate limit exceeded for client %d (limit=%d, tier=%s)",
                 clientIndex, rateLimit,
                 AdaptiveQuality::TierName(adaptiveQuality_.GetTier()));
+            ConnectionSecurityContext::Global().auditLog.LogRateLimited(
+                clientIP, rateLimit);
             adaptiveQuality_.ReportDroppedFrame();
             return;
         }
