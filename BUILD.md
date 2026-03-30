@@ -8,7 +8,7 @@
 | Visual Studio | 2022 Community+ | Compilation |
 | Windows Driver Kit | Windows 11 WDK | Kernel drivers |
 | Windows SDK | 10.0.22621.0+ | Headers, libraries |
-| .NET 6 SDK | 6.0.x | Tray application |
+| .NET 8 SDK | 8.0.x | Tray application |
 | Git | 2.35+ | Source control |
 
 ### Installing Prerequisites
@@ -54,22 +54,35 @@ cd P:\KVM-Drivers
 
 ```
 build\Release\
-├── drivers\          # Kernel drivers (.sys, .inf)
+├── drivers\             # Kernel drivers (.sys, .inf)
 │   ├── vhidkb.sys
 │   ├── vhidmouse.sys
 │   ├── vxinput.sys
 │   └── vdisplay.dll
-├── bin\              # Applications
+├── bin\                 # Applications
 │   ├── KVMService.exe
 │   ├── KVMTray.exe
 │   └── remote.dll
-├── tests\            # Test executables
+├── tests\               # Test executables
 │   ├── test_keyboard.exe
 │   ├── test_mouse.exe
-│   └── test_harness.exe
-└── logs\             # Build logs
+│   ├── test_harness.exe
+│   └── stress_test.exe
+└── logs\                # Build logs
     ├── vhidkb.log
     └── ...
+```
+
+### User-Data Paths (Runtime)
+
+```
+%LOCALAPPDATA%\KVM-Drivers\
+├── settings.json              # Persisted tray settings
+├── trusted_clients.txt        # Approved remote client IPs + expiry
+├── audit_log.csv              # Per-connection ETW audit trail
+└── pending_approvals\         # File-IPC between C++ servers and C# tray
+    ├── <UUID>.request         # Written by C++ server for new clients
+    └── <UUID>.result          # Written by C# tray with decision
 ```
 
 ## Installing Drivers
@@ -172,7 +185,32 @@ cd build\Release\bin
 KVMService.exe --vnc-port 5900
 
 # Connect with any VNC client to localhost:5900
+# RFB 3.8: offers VNCAuth (if password set) or None
+# AnonTLS: enabled via Settings → VNC Security → Enable AnonTLS
 ```
+
+### Stress Tests
+
+```powershell
+cd build\Release\tests
+
+# Quick smoke test (1 hour)
+stress_test.exe --hours 1 --output results_1h.json
+
+# Full 72-hour stability test
+stress_test.exe --72h --output results_72h.json
+
+# Options
+#  --hours N               Duration in hours (default 12)
+#  --rate N                Events/second (default 100)
+#  --72h                   72h preset at 60 events/sec
+#  --single                Single thread instead of keyboard+mouse+controller
+#  --no-watchdog           Disable hang detection
+#  --watchdog-timeout N    Seconds before watchdog fires (default 30)
+#  --output FILE           Write JSON result file
+```
+
+**Passing criteria**: RESULT: PASSED (error rate < 0.1%, no watchdog fires, no driver reconnects)
 
 ### WebSocket Protocol Test
 
@@ -265,8 +303,20 @@ test_harness.exe  # Will show if using driver or SendInput fallback
 |---------|----------|
 | "Cannot bind to port" | Check if another service uses 5900/8443: `netstat -ano \| findstr 5900` |
 | TLS handshake fails | Check certificate store, ensure TLS 1.3 enabled |
-| VNC authentication fails | Reset VNC password in tray app settings |
+| VNC authentication fails | Reset VNC password in tray app Settings → VNC Server |
 | WebSocket disconnects | Check firewall rules for port 8443 |
+| VNC AnonTLS fails | Ensure Settings → VNC Security → Enable AnonTLS is checked; cert is auto-created |
+| Connection approval dialog doesn't appear | Ensure KVMTray.exe is running; check `%LOCALAPPDATA%\KVM-Drivers\pending_approvals\` |
+| Remote client rejected silently | Check IP allowlist in Settings — empty = allow all |
+| Trusted client not remembered | Check `%LOCALAPPDATA%\KVM-Drivers\trusted_clients.txt` exists and is not expired |
+
+### Diagnostics Tab
+
+The tray app has a built-in **Diagnostics** tab:
+1. Click **Run Health Checks** — checks WDF runtime, port availability, driver accessibility, disk space, pending reboots
+2. Select a failed row and click **Repair Selected** — attempts pnputil-based driver reinstall
+3. **Export Audit Log** — saves `audit_log.csv` with all connection history
+4. Connection Audit Log table shows real-time events from ETW
 
 ## Development
 
@@ -275,21 +325,39 @@ test_harness.exe  # Will show if using driver or SendInput fallback
 ```
 KVM-Drivers/
 ├── src/
-│   ├── drivers/           # Kernel drivers
-│   │   ├── vhidkb/       # Virtual HID Keyboard
-│   │   ├── vhidmouse/    # Virtual HID Mouse
-│   │   ├── vxinput/      # Virtual Xbox Controller
-│   │   └── vdisplay/     # Virtual Display (IDD)
+│   ├── common/                     # Shared C++ headers
+│   │   ├── adaptive_quality.h      # 5-tier FPS scaler
+│   │   ├── rate_limiter.h          # Token bucket + connection tracker
+│   │   ├── connection_security.h   # ETW audit, cert pinning, TOFU gate
+│   │   ├── logging/                # Lock-free unified logger
+│   │   └── performance/            # Hitch detection, latency tracking
+│   ├── drivers/                    # Kernel drivers
+│   │   ├── vhidkb/                # Virtual HID Keyboard
+│   │   ├── vhidmouse/             # Virtual HID Mouse
+│   │   ├── vxinput/               # Virtual Xbox Controller
+│   │   └── vdisplay/              # Virtual Display (IDD)
 │   ├── usermode/
-│   │   ├── core/         # KVMService, driver_interface
-│   │   ├── remote/       # WebSocket, VNC, TLS
-│   │   ├── encoding/     # NVENC, AMF, QSV encoders
-│   │   ├── video/        # Video pipeline
-│   │   └── tray/         # WPF System Tray App
-│   └── tests/            # Test utilities
-├── scripts/              # Build/install scripts
-├── docs/                 # Documentation
-└── build/               # Build output (generated)
+│   │   ├── core/                  # KVMService, DriverInterface
+│   │   ├── remote/
+│   │   │   ├── native/            # WebSocket (sync + async)
+│   │   │   └── vnc/               # VNC server + TLS wrapper
+│   │   ├── encoding/              # NVENC, AMF, QSV encoders
+│   │   └── automation/            # YAML engine, C++ framework, C# wrapper
+│   └── tray/                       # WPF System Tray App
+│       ├── ConnectionApprovalDialog.*  # TOFU approval UI
+│       ├── ConnectionApprovalManager.cs # Polls pending_approvals dir
+│       ├── DiagnosticsEngine.cs        # Health checks, self-repair
+│       └── SettingsManager.cs          # Persists AppSettings
+├── tests/
+│   ├── stress_test.cpp              # 72-hour capable stress tester
+│   ├── test_keyboard.cpp
+│   ├── test_mouse.cpp
+│   └── test_harness.cpp
+├── docs/                             # Guides and audit reports
+├── scripts/                          # Build/install scripts
+├── CONTRIBUTING.md
+├── LICENSE
+└── build/                            # Build output (generated)
 ```
 
 ### Adding New IOCTL Commands

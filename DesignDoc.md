@@ -232,6 +232,97 @@ Network Thread (select, 100ms)     Injection Worker Thread
 - Tier-aware rate limiting (120→10 inputs/sec based on `AdaptiveQuality` tier)
 - `new`/`delete` RAII for all allocations (no `malloc`/`free`)
 
+### VNC Server (RFB 3.8)
+
+Full VNC protocol implementation compatible with RealVNC, TightVNC, TigerVNC, UltraVNC.
+
+**File**: `src/usermode/remote/vnc/vnc_server.cpp`, `vnc_tls.h`
+
+**Protocol features**:
+- RFB 3.8 handshake with proper security negotiation
+- **Authentication**: VNCAuth (DES challenge-response via BCrypt) or None
+- **AnonTLS** (`vnc_tls.h`): Schannel TLS 1.2/1.3 server-side wrapper; `CertCreateSelfSignCertificate` for auto cert
+- **Encodings**: Raw + Hextile (tile-level uniform/subrect detection for 3-5× bandwidth reduction)
+- **Input dispatch**: Full X11 keysym → Windows VK mapping (`KeySymMapper`, 100+ keys) wired to `DriverInterface`
+- **Pointer events**: Absolute mouse move, L/M/R buttons, scroll wheel (pseudo-buttons 3-6)
+- **Adaptive quality**: `AdaptiveQuality` degrades FPS 60→5 on slow frame sends or CPU > 90%
+- **Pre-allocated framebuffer**: No per-frame heap allocation; bounds-checked rect clamping
+
+**`KeySymMapper`** (in `vnc_server.cpp`):
+```cpp
+// Maps X11 keysym to Windows Virtual Key
+UINT32 KeySymMapper::X11ToWindows(UINT32 keysym);
+// Ranges: 0x20-0x7e (ASCII), 0xff08-0xffff (special/function keys)
+```
+
+### Connection Auth Gate (TOFU + Trusted Clients)
+
+Unified authentication policy for all remote protocols.
+
+**File**: `src/common/connection_security.h`
+
+**Auth decision chain** (evaluated in order):
+1. IP allowlist block → REJECT immediately
+2. Localhost (127.0.0.1/::1) → **ALLOW** (no prompt — local automation path)
+3. Valid bearer token → ALLOW + permanently trust IP
+4. IP in `TrustedClientsStore` (not expired) → ALLOW
+5. `RequireRemoteAuth = false` → ALLOW
+6. `TrustOnFirstUse = true` → write `.request` file → wait 35s for tray decision
+7. Otherwise → REJECT
+
+**`TrustedClientsStore`**: Persists `IP + expiry_epoch` to `%LOCALAPPDATA%\KVM-Drivers\trusted_clients.txt`. Trust entries can have a duration (e.g. 60 min) or be permanent.
+
+**File-based IPC** (`ApprovalRequestStore`):
+```
+C++ server                          C# tray
+  writes pending_approvals/<id>.request
+                        ←  ConnectionApprovalManager.cs polls every 500ms
+                        ←  shows ConnectionApprovalDialog (30s countdown)
+  reads .result file    ←  writes "approved" / "rejected" / "blocked"
+```
+
+**Settings** (`AppSettings`):
+```csharp
+bool   RequireRemoteAuth  // default true
+bool   TrustOnFirstUse    // default true (shows dialog for unknowns)
+string AuthToken          // pre-shared bearer token (empty = disabled)
+```
+
+### Connection Security Context
+
+ETW audit logging, certificate pinning, IP allowlist, and mutual auth — all in one singleton.
+
+**File**: `src/common/connection_security.h`
+
+**Classes**:
+- `EtwAuditLogger` — registers ETW provider `{B3D5A9B0-...}`, logs CONNECT/DISCONNECT/AUTH/RATE_LIMITED events
+- `CertificatePinner` — SHA-1 thumbprint comparison against a configured list
+- `IpAllowlist` — CIDR and exact-IP matching (IPv4)
+- `MutualAuthConfig` — configures Schannel `ASC_REQ_MUTUAL_AUTH` flag
+- `ConnectionAuthGate` — orchestrates the TOFU decision chain (see above)
+- `ConnectionSecurityContext::Global()` — singleton exposing all of the above
+
+### M8 Diagnostics Engine
+
+Built-in health check, self-repair, and audit log for the tray application.
+
+**File**: `src/tray/DiagnosticsEngine.cs`
+
+**Health checks** run on demand:
+| Check | Pass Condition |
+|-------|---------------|
+| vhidkb/vhidmouse/vxinput/vdisplay | `CreateFile("\\\\.\\<device>")` succeeds |
+| WDF Runtime | `Wdf01000.sys` present in `%SystemRoot%\drivers` |
+| Winsock2 | Registry key present |
+| VNC port 5900 | Port not already in use |
+| WebSocket port 8443 | Port not already in use |
+| Disk space | > 1 GB free on log drive |
+| Pending reboot | No `RebootPending` / `RebootRequired` registry keys |
+
+**Self-repair**: Uses `pnputil /add-driver <inf> /install` (elevated) to reinstall missing drivers.
+
+**Audit log**: `%LOCALAPPDATA%\KVM-Drivers\audit_log.csv` — CSV with Timestamp, ClientIP, Protocol, EventType, Details. Exportable from the Diagnostics tab.
+
 ---
 
 ## Driver Architecture
