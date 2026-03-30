@@ -311,6 +311,56 @@ NTSTATUS vxinputSubmitReport(
     return STATUS_SUCCESS;
 }
 
+// Validate IOCTL input buffer with comprehensive checks
+static NTSTATUS ValidateVxinputIoctlBuffer(
+    _In_ WDFREQUEST Request,
+    _In_ size_t ExpectedSize,
+    _Out_ PVOID* Buffer,
+    _Out_ size_t* ActualSize
+)
+{
+    NTSTATUS status;
+
+    if (ExpectedSize == 0) {
+        *Buffer = NULL;
+        *ActualSize = 0;
+        return STATUS_SUCCESS;
+    }
+
+    status = WdfRequestRetrieveInputBuffer(Request, ExpectedSize, Buffer, ActualSize);
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("vxinput: Input buffer retrieval failed: 0x%X\n", status));
+        return status;
+    }
+    if (*ActualSize < ExpectedSize) {
+        KdPrint(("vxinput: Input buffer too small: %zu < %zu\n", *ActualSize, ExpectedSize));
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    return STATUS_SUCCESS;
+}
+
+// Validate IOCTL output buffer with comprehensive checks
+static NTSTATUS ValidateVxinputOutputBuffer(
+    _In_ WDFREQUEST Request,
+    _In_ size_t ExpectedSize,
+    _Out_ PVOID* Buffer,
+    _Out_ size_t* ActualSize
+)
+{
+    NTSTATUS status;
+
+    status = WdfRequestRetrieveOutputBuffer(Request, ExpectedSize, Buffer, ActualSize);
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("vxinput: Output buffer retrieval failed: 0x%X\n", status));
+        return status;
+    }
+    if (*ActualSize < ExpectedSize) {
+        KdPrint(("vxinput: Output buffer too small: %zu < %zu\n", *ActualSize, ExpectedSize));
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    return STATUS_SUCCESS;
+}
+
 // IOCTL handlers
 VOID vxinputEvtIoDeviceControl(
     _In_ WDFQUEUE Queue,
@@ -320,9 +370,6 @@ VOID vxinputEvtIoDeviceControl(
     _In_ ULONG IoControlCode
 )
 {
-    UNREFERENCED_PARAMETER(OutputBufferLength);
-    UNREFERENCED_PARAMETER(InputBufferLength);
-
     NTSTATUS status = STATUS_SUCCESS;
     WDFDEVICE device;
     PVXINPUT_BUS_CONTEXT busContext;
@@ -330,13 +377,21 @@ VOID vxinputEvtIoDeviceControl(
     device = WdfIoQueueGetDevice(Queue);
     busContext = vxinputGetBusContext(device);
 
+    KdPrint(("vxinput: IOCTL 0x%X, InLen=%zu, OutLen=%zu\n",
+        IoControlCode, InputBufferLength, OutputBufferLength));
+
     switch (IoControlCode) {
     case IOCTL_VXINPUT_CREATE_CONTROLLER: {
         PXUSB_CONTROLLER_INFO controllerInfo;
         size_t bufferSize;
         PVXINPUT_CONTROLLER_CONTEXT controllerContext = NULL;
 
-        status = WdfRequestRetrieveInputBuffer(Request, sizeof(XUSB_CONTROLLER_INFO), (PVOID*)&controllerInfo, &bufferSize);
+        if (InputBufferLength < sizeof(XUSB_CONTROLLER_INFO)) {
+            KdPrint(("vxinput: CREATE_CONTROLLER input buffer too small\n"));
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        status = ValidateVxinputIoctlBuffer(Request, sizeof(XUSB_CONTROLLER_INFO), (PVOID*)&controllerInfo, &bufferSize);
         if (NT_SUCCESS(status)) {
             status = vxinputCreateController(busContext, controllerInfo, &controllerContext);
             if (NT_SUCCESS(status)) {
@@ -357,9 +412,19 @@ VOID vxinputEvtIoDeviceControl(
         PVXINPUT_CONTROLLER_CONTEXT controllerContext;
         size_t bufferSize;
 
-        status = WdfRequestRetrieveInputBuffer(Request, sizeof(PVOID), (PVOID*)&controllerContext, &bufferSize);
+        if (InputBufferLength < sizeof(PVOID)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        status = ValidateVxinputIoctlBuffer(Request, sizeof(PVOID), (PVOID*)&controllerContext, &bufferSize);
         if (NT_SUCCESS(status)) {
+            if (controllerContext == NULL) {
+                KdPrint(("vxinput: REMOVE_CONTROLLER null context\n"));
+                status = STATUS_INVALID_PARAMETER;
+                break;
+            }
             status = vxinputRemoveController(controllerContext);
+            KdPrint(("vxinput: REMOVE_CONTROLLER %s\n", NT_SUCCESS(status) ? "OK" : "FAIL"));
         }
         break;
     }
@@ -368,7 +433,12 @@ VOID vxinputEvtIoDeviceControl(
         PXUSB_REPORT report;
         size_t bufferSize;
 
-        status = WdfRequestRetrieveInputBuffer(Request, sizeof(XUSB_REPORT), (PVOID*)&report, &bufferSize);
+        if (InputBufferLength < sizeof(XUSB_REPORT)) {
+            KdPrint(("vxinput: SUBMIT_REPORT buffer too small\n"));
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        status = ValidateVxinputIoctlBuffer(Request, sizeof(XUSB_REPORT), (PVOID*)&report, &bufferSize);
         if (NT_SUCCESS(status)) {
             // Controller handle is in the request context or we search by index
             // For now, use the first active controller
@@ -393,14 +463,25 @@ VOID vxinputEvtIoDeviceControl(
     }
 
     case IOCTL_VXINPUT_GET_RUMBLE: {
-        // Return rumble state for a controller
         PVXINPUT_CONTROLLER_CONTEXT controllerContext;
         size_t bufferSize;
         PXUSB_RUMBLE_STATE rumbleState;
 
-        status = WdfRequestRetrieveInputBuffer(Request, sizeof(PVOID), (PVOID*)&controllerContext, &bufferSize);
+        if (InputBufferLength < sizeof(PVOID)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        status = ValidateVxinputIoctlBuffer(Request, sizeof(PVOID), (PVOID*)&controllerContext, &bufferSize);
         if (NT_SUCCESS(status)) {
-            status = WdfRequestRetrieveOutputBuffer(Request, sizeof(XUSB_RUMBLE_STATE), (PVOID*)&rumbleState, &bufferSize);
+            if (controllerContext == NULL) {
+                status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+            if (OutputBufferLength < sizeof(XUSB_RUMBLE_STATE)) {
+                status = STATUS_BUFFER_TOO_SMALL;
+                break;
+            }
+            status = ValidateVxinputOutputBuffer(Request, sizeof(XUSB_RUMBLE_STATE), (PVOID*)&rumbleState, &bufferSize);
             if (NT_SUCCESS(status)) {
                 RtlCopyMemory(rumbleState, &controllerContext->RumbleState, sizeof(XUSB_RUMBLE_STATE));
                 WdfRequestSetInformation(Request, sizeof(XUSB_RUMBLE_STATE));
@@ -413,18 +494,24 @@ VOID vxinputEvtIoDeviceControl(
         PULONG count;
         size_t bufferSize;
 
-        status = WdfRequestRetrieveOutputBuffer(Request, sizeof(ULONG), (PVOID*)&count, &bufferSize);
+        if (OutputBufferLength < sizeof(ULONG)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        status = ValidateVxinputOutputBuffer(Request, sizeof(ULONG), (PVOID*)&count, &bufferSize);
         if (NT_SUCCESS(status)) {
             KIRQL oldIrql;
             KeAcquireSpinLock(&busContext->ControllerListLock, &oldIrql);
             *count = busContext->ControllerCount;
             KeReleaseSpinLock(&busContext->ControllerListLock, oldIrql);
             WdfRequestSetInformation(Request, sizeof(ULONG));
+            KdPrint(("vxinput: GET_CONTROLLER_COUNT = %u\n", *count));
         }
         break;
     }
 
     default:
+        KdPrint(("vxinput: Unknown IOCTL 0x%X\n", IoControlCode));
         status = STATUS_INVALID_DEVICE_REQUEST;
         break;
     }
