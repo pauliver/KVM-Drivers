@@ -87,17 +87,44 @@ REM Install script
 copy /y "!REPO!\installer\Install.ps1" "!STAGE!\Install.ps1" >nul
 echo   + Install.ps1
 
-REM Main binaries
-for %%f in (KVMService.exe KVMTray.exe index.html) do (
-    if exist "!BIN!\%%f" (
-        copy /y "!BIN!\%%f" "!STAGE!\%%f" >nul
-        echo   + %%f
-    ) else (
-        echo   - %%f  [not found, skipped]
+REM KVMService.exe
+if exist "!BIN!\KVMService.exe" (
+    copy /y "!BIN!\KVMService.exe" "!STAGE!\KVMService.exe" >nul
+    echo   + KVMService.exe
+) else (
+    echo   - KVMService.exe [not found]
+)
+
+REM KVMTray.exe + all .NET runtime dependencies
+REM  Copy everything from bin\ except linker artifacts (.exp .lib .pdb)
+for %%f in ("!BIN!\*.exe" "!BIN!\*.dll" "!BIN!\*.json") do (
+    echo %%~xf | findstr /i ".exe .dll .json" >nul
+    if not errorlevel 1 (
+        copy /y "%%f" "!STAGE!\%%~nxf" >nul
+        echo   + %%~nxf
+    )
+)
+REM  Tray runtime sub-folders (amd64 / arm64 / x86 / runtimes)
+for %%d in (amd64 arm64 x86 runtimes) do (
+    if exist "!BIN!\%%d" (
+        xcopy /e /y /q "!BIN!\%%d" "!STAGE!\%%d\" >nul
+        echo   + %%d\ (subtree)
     )
 )
 
-REM Optional OpenH264 DLL (drop openh264.dll next to KVMService.exe to enable software encoding)
+REM index.html  (web client — lives in src\webclient, not in build output)
+set WEBCLIENT=%REPO%\src\webclient\index.html
+if exist "!WEBCLIENT!" (
+    copy /y "!WEBCLIENT!" "!STAGE!\index.html" >nul
+    echo   + index.html  (from src\webclient)
+) else if exist "!BIN!\index.html" (
+    copy /y "!BIN!\index.html" "!STAGE!\index.html" >nul
+    echo   + index.html  (from build output)
+) else (
+    echo   - index.html [not found, skipped]
+)
+
+REM Optional OpenH264 DLL
 if exist "!BIN!\openh264.dll" (
     copy /y "!BIN!\openh264.dll" "!STAGE!\openh264.dll" >nul
     echo   + openh264.dll

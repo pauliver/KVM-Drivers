@@ -35,6 +35,9 @@ packages/
 # WPP tracing
 *.tmh
 
+# Generated installer package
+installer/Install.zip
+
 # Temporary files
 *.tmp
 *.log
