@@ -5,7 +5,6 @@
 #include <ws2tcpip.h>
 #include <iostream>
 #include <cstring>
-#include <zlib.h>
 #include <bcrypt.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -20,41 +19,6 @@
 
 namespace KVMDrivers {
 namespace Remote {
-
-// RFB Protocol constants
-namespace RFB {
-    constexpr int ProtocolVersionMajor = 3;
-    constexpr int ProtocolVersionMinor = 8;
-    
-    enum SecurityType {
-        SecTypeInvalid = 0,
-        SecTypeNone = 1,
-        SecTypeVNCAuth = 2,
-    };
-    
-    enum ClientMsgType {
-        ClientSetPixelFormat = 0,
-        ClientSetEncodings = 2,
-        ClientFramebufferUpdateRequest = 3,
-        ClientKeyEvent = 4,
-        ClientPointerEvent = 5,
-        ClientCutText = 6,
-    };
-    
-    enum ServerMsgType {
-        ServerFramebufferUpdate = 0,
-    };
-    
-    enum Encoding {
-        EncodingRaw = 0,
-        EncodingCopyRect = 1,
-        EncodingRRE = 2,
-        EncodingHextile = 5,
-        EncodingZlib = 6,
-        EncodingTight = 7,
-        EncodingZRLE = 16,
-    };
-}
 
 // X11 keysym to Windows Virtual Key mapping
 UINT32 KeySymMapper::X11ToWindows(UINT32 keysym) {

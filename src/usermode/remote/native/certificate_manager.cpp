@@ -1,6 +1,10 @@
 // certificate_manager.cpp - TLS Certificate management for secure connections
 #include <windows.h>
 #include <wincrypt.h>
+
+#ifndef PKCS12_EXPORT_EXTENDED_PROPERTIES
+#define PKCS12_EXPORT_EXTENDED_PROPERTIES 0x00000010
+#endif
 #include <cryptuiapi.h>
 #include <iostream>
 #include <string>

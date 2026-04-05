@@ -12,6 +12,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Shapes;
 using System.Windows.Threading;
 using System.ComponentModel;
 using Microsoft.Win32;
@@ -96,6 +97,10 @@ namespace KVM.Tray
             RequireRemoteAuth.IsChecked = settings.RequireRemoteAuth;
             TrustOnFirstUse.IsChecked   = settings.TrustOnFirstUse;
             AuthTokenBox.Text           = settings.AuthToken ?? "";
+
+            // Apply application settings
+            AutoStartCheckBox.IsChecked    = settings.AutoStartWithWindows;
+            MinimizeToTrayCheckBox.IsChecked = settings.MinimizeToTray;
             
             // Apply driver auto-start if enabled
             if (settings.AutoStartDrivers)

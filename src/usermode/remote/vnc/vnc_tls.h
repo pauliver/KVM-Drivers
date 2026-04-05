@@ -131,16 +131,12 @@ public:
         GetSystemTime(&start);
         GetSystemTime(&end);
         end.wYear += 10;
-        FILETIME ftStart, ftEnd;
-        SystemTimeToFileTime(&start, &ftStart);
-        SystemTimeToFileTime(&end, &ftEnd);
-
         // Signature algorithm: SHA-256 RSA
         CRYPT_ALGORITHM_IDENTIFIER sigAlg = {};
         sigAlg.pszObjId = const_cast<LPSTR>(szOID_RSA_SHA256RSA);
 
         PCCERT_CONTEXT cert = CertCreateSelfSignCertificate(
-            NULL, &nameBlob, 0, &keyInfo, &sigAlg, &ftStart, &ftEnd, NULL);
+            NULL, &nameBlob, 0, &keyInfo, &sigAlg, &start, &end, NULL);
 
         if (!cert) {
             std::cerr << "[TLS] CertCreateSelfSignCertificate failed: 0x"

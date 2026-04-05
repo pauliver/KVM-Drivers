@@ -4,12 +4,17 @@
 // - The VNC server uses its own SChannel wrapper in vnc_tls.h.
 // To add TLS to the WebSocket path, instantiate TlsServer here and
 // have service.cpp create it on port 8443 in front of AsyncWebSocketServer.
+#define SECURITY_WIN32
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <schannel.h>
 #include <security.h>
 #include <sspi.h>
+
+#ifndef SCH_CRED_MUTUAL_AUTH
+#define SCH_CRED_MUTUAL_AUTH 0x00000002
+#endif
 #include <iostream>
 #include <string>
 #include <vector>

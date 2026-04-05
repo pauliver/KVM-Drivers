@@ -9,6 +9,10 @@ build/
 *.ilk
 *.exp
 
+# .NET build artifacts
+src/tray/obj/
+src/tray/bin/
+
 # Visual Studio
 .vs/
 *.user

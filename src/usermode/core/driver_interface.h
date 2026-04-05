@@ -3,9 +3,9 @@
 #include <vector>
 #include <mutex>
 #include <atomic>
-#include "../../../drivers/vhidkb/vhidkb_ioctl.h"
-#include "../../../drivers/vhidmouse/vhidmouse_ioctl.h"
-#include "../../../drivers/vxinput/vxinput.h"
+#include "../../drivers/vhidkb/vhidkb_ioctl.h"
+#include "../../drivers/vhidmouse/vhidmouse_ioctl.h"
+#include "../../drivers/vxinput/vxinput.h"
 
 // C++ interface for driver communication with SendInput fallback
 class DriverInterface {

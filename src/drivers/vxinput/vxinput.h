@@ -1,7 +1,16 @@
 #pragma once
+
+#ifdef _KERNEL_MODE
 #include <ntddk.h>
 #include <wdf.h>
 #include <vhf.h>
+#else
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <winioctl.h>
+#endif
 
 #define POOL_TAG 'xniV'
 
@@ -61,6 +70,8 @@ typedef struct _XUSB_CONTROLLER_INFO {
     ULONG UserIndex;        // Player number (0-3)
     HANDLE ControllerHandle; // Out: Handle to controller context
 } XUSB_CONTROLLER_INFO, *PXUSB_CONTROLLER_INFO;
+
+#ifdef _KERNEL_MODE
 
 // Bus context (one per driver)
 typedef struct _VXINPUT_BUS_CONTEXT {
@@ -123,3 +134,5 @@ typedef struct _CONTROLLER_CONTEXT {
 } CONTROLLER_CONTEXT, *PCONTROLLER_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(CONTROLLER_CONTEXT, vxinputGetContext)
+
+#endif // _KERNEL_MODE

@@ -202,7 +202,7 @@ namespace KVM.Tray
         
         private void Worker_DoWork(object sender, DoWorkEventArgs e)
         {
-            using (var source = new ETWTraceEventSource(_session.Name, TraceEventSourceType.Session))
+            using (var source = new ETWTraceEventSource(_session.SessionName, TraceEventSourceType.Session))
             {
                 source.Dynamic.All += (eventData) =>
                 {

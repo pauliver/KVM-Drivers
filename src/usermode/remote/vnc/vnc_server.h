@@ -3,6 +3,9 @@
 
 #pragma once
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <winsock2.h>
 #include <string>
@@ -10,7 +13,6 @@
 #include <thread>
 #include <mutex>
 #include <functional>
-#include <openssl/des.h>
 
 namespace KVMDrivers {
 namespace Remote {
@@ -134,6 +136,8 @@ using CutTextCallback = std::function<void(const std::string& text, VNCClientInf
 using ClientConnectedCallback = std::function<void(VNCClientInfo& client)>;
 using ClientDisconnectedCallback = std::function<void(VNCClientInfo& client)>;
 
+class VncServerImpl;  // forward declaration — full definition in vnc_server.cpp
+
 // VNC Server class
 class VNCServer {
 public:
@@ -185,96 +189,7 @@ public:
     double GetAverageFrameTime() const;
 
 private:
-    VNCServerConfig config_;
-    bool running_;
-    bool initialized_;
-    
-    // Network
-    SOCKET listenSocket_;
-    std::thread acceptThread_;
-    std::vector<std::thread> clientThreads_;
-    std::vector<std::unique_ptr<VNCClientInfo>> clients_;
-    std::mutex clientsMutex_;
-    
-    // Framebuffer
-    std::vector<UINT8> framebuffer_;
-    int fbWidth_;
-    int fbHeight_;
-    int fbPitch_;
-    std::mutex fbMutex_;
-    
-    // Cursor
-    std::vector<UINT8> cursorImage_;
-    int cursorWidth_;
-    int cursorHeight_;
-    int cursorHotspotX_;
-    int cursorHotspotY_;
-    int cursorX_;
-    int cursorY_;
-    bool cursorVisible_;
-    std::mutex cursorMutex_;
-    
-    // Desktop name
-    std::string desktopName_;
-    
-    // Callbacks
-    KeyEventCallback onKeyEvent_;
-    PointerEventCallback onPointerEvent_;
-    CutTextCallback onCutText_;
-    ClientConnectedCallback onClientConnected_;
-    ClientDisconnectedCallback onClientDisconnected_;
-    
-    // Statistics
-    std::atomic<int> totalBytesSent_;
-    std::atomic<int> totalBytesReceived_;
-    std::atomic<int> frameUpdatesSent_;
-    std::atomic<double> totalFrameTime_;
-    
-    // Methods
-    bool CreateListenSocket();
-    void AcceptLoop();
-    void ClientLoop(VNCClientInfo* client);
-    void RemoveClient(VNCClientInfo* client);
-    
-    // Protocol handlers
-    bool HandleProtocolVersion(VNCClientInfo* client);
-    bool HandleSecurity(VNCClientInfo* client);
-    bool HandleVNCAuth(VNCClientInfo* client);
-    bool HandleMSLogon(VNCClientInfo* client);
-    bool HandleClientInit(VNCClientInfo* client);
-    bool HandleServerInit(VNCClientInfo* client);
-    
-    // Message handlers
-    bool HandleSetPixelFormat(VNCClientInfo* client);
-    bool HandleSetEncodings(VNCClientInfo* client);
-    bool HandleFramebufferUpdateRequest(VNCClientInfo* client);
-    bool HandleKeyEvent(VNCClientInfo* client);
-    bool HandlePointerEvent(VNCClientInfo* client);
-    bool HandleCutText(VNCClientInfo* client);
-    
-    // Encoding
-    void SendFramebufferUpdate(VNCClientInfo* client, int x, int y, int w, int h);
-    void SendRawRect(VNCClientInfo* client, int x, int y, int w, int h);
-    void SendRRERect(VNCClientInfo* client, int x, int y, int w, int h);
-    void SendHextileRect(VNCClientInfo* client, int x, int y, int w, int h);
-    void SendZlibRect(VNCClientInfo* client, int x, int y, int w, int h);
-    void SendTightRect(VNCClientInfo* client, int x, int y, int w, int h);
-    void SendZRLE(VNCClientInfo* client, int x, int y, int w, int h);
-    void SendCursorUpdate(VNCClientInfo* client);
-    void SendDesktopSizeUpdate(VNCClientInfo* client);
-    
-    // Helpers
-    bool SendExact(SOCKET socket, const void* data, int len);
-    bool RecvExact(SOCKET socket, void* data, int len);
-    void WriteUInt8(std::vector<UINT8>& buf, UINT8 val);
-    void WriteUInt16(std::vector<UINT8>& buf, UINT16 val);
-    void WriteUInt32(std::vector<UINT8>& buf, UINT32 val);
-    void WritePixelFormat(std::vector<UINT8>& buf, const RFB::PixelFormat& pf);
-    
-    // DES encryption for VNC auth
-    void EncryptVNCChallenge(const UINT8 challenge[16], const char* password, 
-        UINT8 response[16]);
-    void DesKey(const char* password, DES_key_schedule* schedule);
+    VncServerImpl* impl_;
 };
 
 // X11 keysym to Windows VK code mapping

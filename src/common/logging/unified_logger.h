@@ -81,21 +81,16 @@ typedef struct _LOGGER_CONTEXT {
 extern "C" {
 #endif
 
-// Initialize logger
+#ifdef _KERNEL_MODE
+// ── Kernel-mode prototypes (with SAL/IRQL annotations) ───────────────────────
 _IRQL_requires_max_(PASSIVE_LEVEL)
 NTSTATUS LoggerInitialize(
     _In_ PLOGGER_CONTEXT Context,
     _In_ UCHAR MinLevel,
     _In_ ULONG Categories
 );
-
-// Shutdown logger
 _IRQL_requires_max_(PASSIVE_LEVEL)
-VOID LoggerShutdown(
-    _In_ PLOGGER_CONTEXT Context
-);
-
-// Core logging function
+VOID LoggerShutdown(_In_ PLOGGER_CONTEXT Context);
 _IRQL_requires_max_(DISPATCH_LEVEL)
 VOID LoggerLog(
     _In_ PLOGGER_CONTEXT Context,
@@ -107,21 +102,24 @@ VOID LoggerLog(
     _In_z_ const CHAR* Format,
     ...
 );
-
-// Get recent logs
 _IRQL_requires_max_(DISPATCH_LEVEL)
 ULONG LoggerGetRecentEntries(
     _In_ PLOGGER_CONTEXT Context,
     _Out_writes_(MaxEntries) PLOG_ENTRY Entries,
     _In_ ULONG MaxEntries
 );
-
-// Set log level at runtime
 _IRQL_requires_max_(DISPATCH_LEVEL)
-VOID LoggerSetLevel(
-    _In_ PLOGGER_CONTEXT Context,
-    _In_ UCHAR NewLevel
-);
+VOID LoggerSetLevel(_In_ PLOGGER_CONTEXT Context, _In_ UCHAR NewLevel);
+#else
+// ── User-mode prototypes ──────────────────────────────────────────────────────
+void LoggerInitialize(PLOGGER_CONTEXT Context, UCHAR MinLevel, ULONG Categories);
+void LoggerShutdown(PLOGGER_CONTEXT Context);
+void LoggerLog(PLOGGER_CONTEXT Context, UCHAR Level, ULONG Category,
+    const CHAR* Component, const CHAR* Function, ULONG Line,
+    const CHAR* Format, ...);
+ULONG LoggerGetRecentEntries(PLOGGER_CONTEXT Context, PLOG_ENTRY Entries, ULONG MaxEntries);
+void LoggerSetLevel(PLOGGER_CONTEXT Context, UCHAR NewLevel);
+#endif
 
 // Convenience macros
 #define LOG_FATAL(logger, cat, comp, fmt, ...) \

@@ -5,9 +5,15 @@
 //   4. IP allowlist enforcement
 
 #pragma once
+#define SECURITY_WIN32
 #include <windows.h>
+#include <winsock2.h>
 #include <wincrypt.h>
 #include <evntprov.h>
+#include <evntrace.h>
+#include <winmeta.h>
+#include <sspi.h>
+#include <schannel.h>
 #include <shlobj.h>
 #include <ole2.h>
 #include <iostream>

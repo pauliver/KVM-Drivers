@@ -251,3 +251,36 @@ __declspec(dllexport) void UserLogger_GetStats(unsigned long long* total, unsign
 }
 
 } // extern "C"
+
+// ── Bridge: unified_logger.h interface → UserModeLogger ──────────────────────
+// These satisfy callers of LoggerInitialize/LoggerLog/LoggerShutdown.
+extern "C" {
+
+void LoggerInitialize(PLOGGER_CONTEXT /*ctx*/, UCHAR minLevel, ULONG categories) {
+    g_UserLogger.Initialize(nullptr, minLevel, categories);
+}
+
+void LoggerShutdown(PLOGGER_CONTEXT /*ctx*/) {
+    g_UserLogger.Shutdown();
+}
+
+void LoggerLog(PLOGGER_CONTEXT /*ctx*/, UCHAR level, ULONG /*category*/,
+               const CHAR* component, const CHAR* function, ULONG line,
+               const CHAR* format, ...) {
+    char message[MAX_LOG_MESSAGE_LENGTH];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    g_UserLogger.Log(level, 0, component, function, (int)line, "%s", message);
+}
+
+ULONG LoggerGetRecentEntries(PLOGGER_CONTEXT /*ctx*/, PLOG_ENTRY /*entries*/, ULONG /*max*/) {
+    return 0;
+}
+
+void LoggerSetLevel(PLOGGER_CONTEXT /*ctx*/, UCHAR newLevel) {
+    g_UserLogger.SetMinLevel(newLevel);
+}
+
+} // extern "C"
