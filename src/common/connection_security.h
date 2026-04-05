@@ -293,7 +293,7 @@ struct MutualAuthConfig {
 // Trusted Clients Store
 // Persists IP → trust-expiry pairs to disk so approved clients auto-reconnect.
 // Written by the C# tray app; read by C++ servers.
-// File: %LOCALAPPDATA%\KVM-Drivers\trusted_clients.json  (simple key-value text)
+// File: %PROGRAMDATA%\KVM-Drivers\trusted_clients.txt  (simple key-value text)
 // ─────────────────────────────────────────────────────────────────────────────
 
 class TrustedClientsStore {
@@ -368,7 +368,11 @@ public:
         return false;
     }
 
-    const std::vector<TrustedEntry>& GetEntries() const { return entries_; }
+    // Returns a snapshot (copy) so callers don't need to hold the mutex.
+    std::vector<TrustedEntry> GetEntries() const {
+        std::lock_guard<std::mutex> lk(mutex_);
+        return entries_;
+    }
 
 private:
     mutable std::mutex        mutex_;
@@ -376,7 +380,9 @@ private:
 
     static std::string GetFilePath() {
         char path[MAX_PATH] = {};
-        if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, path))) {
+        // Use CSIDL_COMMON_APPDATA (%PROGRAMDATA%) so the file is accessible
+        // from both the service (LocalService) and the tray (interactive user).
+        if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_COMMON_APPDATA, NULL, 0, path))) {
             return std::string(path) + "\\KVM-Drivers\\trusted_clients.txt";
         }
         return "trusted_clients.txt";
@@ -439,10 +445,11 @@ public:
         return "timedout";
     }
 
-    // C# tray: get pending requests directory for polling
+    // Get the pending-approvals directory. Uses CSIDL_COMMON_APPDATA (%PROGRAMDATA%)
+    // so service and tray processes share the same IPC directory.
     static std::string GetPendingDir() {
         char path[MAX_PATH] = {};
-        if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, path))) {
+        if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_COMMON_APPDATA, NULL, 0, path))) {
             return std::string(path) + "\\KVM-Drivers\\pending_approvals\\";
         }
         return ".\\pending_approvals\\";

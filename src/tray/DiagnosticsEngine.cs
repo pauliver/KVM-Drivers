@@ -462,7 +462,7 @@ namespace KVM.Tray
         private static string GetAuditLogPath()
         {
             string dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                 "KVM-Drivers");
             Directory.CreateDirectory(dir);
             return Path.Combine(dir, "audit_log.csv");

@@ -227,6 +227,8 @@ VOID WINAPI ServiceMain(DWORD argc, LPWSTR* argv) {
 
     // Initialize driver communication
     if (!InitializeDriverInterface()) {
+        CloseHandle(g_ServiceStopEvent);  // prevent handle leak on early exit
+        g_ServiceStopEvent = INVALID_HANDLE_VALUE;
         g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
         g_ServiceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
         SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
@@ -235,6 +237,8 @@ VOID WINAPI ServiceMain(DWORD argc, LPWSTR* argv) {
 
     // Start protocol servers
     if (!StartProtocolServers()) {
+        CloseHandle(g_ServiceStopEvent);  // prevent handle leak on early exit
+        g_ServiceStopEvent = INVALID_HANDLE_VALUE;
         g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
         g_ServiceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
         SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
@@ -254,6 +258,8 @@ VOID WINAPI ServiceMain(DWORD argc, LPWSTR* argv) {
     // Cleanup
     StopProtocolServers();
     CleanupDriverInterface();
+    CloseHandle(g_ServiceStopEvent);
+    g_ServiceStopEvent = INVALID_HANDLE_VALUE;
 
     g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
     SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
@@ -337,12 +343,12 @@ VOID CleanupDriverInterface() {
 }
 
 // Read a single integer value from the tray's JSON settings file.
-// Returns defaultVal if the file is missing, unreadable, or the key is absent.
-// Uses a simple string search — no JSON library needed for one integer.
+// Uses CSIDL_COMMON_APPDATA (%PROGRAMDATA%) so the file is accessible
+// from both the tray (user account) and the service (LocalService account).
 static int ReadSettingInt(const char* key, int defaultVal)
 {
     wchar_t appData[MAX_PATH] = {};
-    if (FAILED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appData)))
+    if (FAILED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, appData)))
         return defaultVal;
 
     std::wstring path = std::wstring(appData) + L"\\KVM-Drivers\\settings.json";

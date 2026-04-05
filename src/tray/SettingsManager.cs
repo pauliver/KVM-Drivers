@@ -71,10 +71,11 @@ namespace KVM.Tray
         private static AppSettings _cachedSettings;
         private static readonly object _lock = new object();
         
-        // Get settings directory
+        // Get settings directory — uses CommonApplicationData (%PROGRAMDATA%) so that
+        // settings.json is readable by KVMService which runs as NT AUTHORITY\LocalService.
         private static string GetSettingsDirectory()
         {
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
             string settingsDir = Path.Combine(appData, AppName);
             
             if (!Directory.Exists(settingsDir))

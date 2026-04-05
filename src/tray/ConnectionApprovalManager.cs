@@ -23,12 +23,14 @@ namespace KVM.Tray
 
     public class ConnectionApprovalManager : IDisposable
     {
+        // Use CommonApplicationData (%PROGRAMDATA%) so the service (running as LocalService)
+        // and the tray (running as the interactive user) share the same directory tree.
         private static readonly string PendingDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "KVM-Drivers", "pending_approvals");
 
         private static readonly string TrustedClientsFile = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "KVM-Drivers", "trusted_clients.txt");
 
         private CancellationTokenSource _cts;

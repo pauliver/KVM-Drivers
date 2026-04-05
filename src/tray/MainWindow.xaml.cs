@@ -355,7 +355,7 @@ namespace KVM.Tray
             try
             {
                 string logPath = System.IO.Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                     "KVM-Drivers", "kvmlogs.txt");
                 
                 System.IO.File.WriteAllText(logPath, LogViewer.Text);
