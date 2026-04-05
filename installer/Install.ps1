@@ -26,7 +26,7 @@ $ErrorActionPreference = 'Stop'
 # ── Self-elevation ────────────────────────────────────────────────────────────
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "Not running as Administrator — re-launching elevated..." -ForegroundColor Yellow
+    Write-Host "Not running as Administrator - re-launching elevated..." -ForegroundColor Yellow
     $args_ = "-ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`""
     Start-Process powershell -ArgumentList $args_ -Verb RunAs
     exit
@@ -44,9 +44,9 @@ $Here       = Split-Path -Parent $MyInvocation.MyCommand.Path   # folder the zip
 function Write-Banner {
     Clear-Host
     Write-Host ""
-    Write-Host "  ╔══════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "  ║       KVM-Drivers  —  Installation Wizard           ║" -ForegroundColor Cyan
-    Write-Host "  ╚══════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "  +======================================================+" -ForegroundColor Cyan
+    Write-Host "  |       KVM-Drivers  -  Installation Wizard            |" -ForegroundColor Cyan
+    Write-Host "  +======================================================+" -ForegroundColor Cyan
     Write-Host ""
 }
 
@@ -55,10 +55,10 @@ function Write-Step ([int]$n, [string]$msg) {
     Write-Host "  [$n/8] $msg" -ForegroundColor Cyan
 }
 
-function Write-Ok    ([string]$msg) { Write-Host "        ✓  $msg" -ForegroundColor Green  }
-function Write-Skip  ([string]$msg) { Write-Host "        –  $msg" -ForegroundColor DarkGray }
-function Write-Warn  ([string]$msg) { Write-Host "        ⚠  $msg" -ForegroundColor Yellow }
-function Write-Fail  ([string]$msg) { Write-Host "        ✗  $msg" -ForegroundColor Red    }
+function Write-Ok    ([string]$msg) { Write-Host "        OK  $msg" -ForegroundColor Green  }
+function Write-Skip  ([string]$msg) { Write-Host "      SKIP  $msg" -ForegroundColor DarkGray }
+function Write-Warn  ([string]$msg) { Write-Host "      WARN  $msg" -ForegroundColor Yellow }
+function Write-Fail  ([string]$msg) { Write-Host "      FAIL  $msg" -ForegroundColor Red    }
 
 function Read-Confirmation ([string]$question, [string]$default = 'Y') {
     $hint = if ($default -eq 'Y') { '[Y/n]' } else { '[y/N]' }
@@ -73,7 +73,7 @@ Write-Host "  This script will install KVM-Drivers on this machine." -Foreground
 Write-Host "  Install directory : $InstallDir" -ForegroundColor DarkGray
 Write-Host "  Log directory     : $LogDir"     -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  NOTE: Drivers are DEV-SIGNED only — test-signing will be enabled." -ForegroundColor Yellow
+Write-Host "  NOTE: Drivers are DEV-SIGNED only - test-signing will be enabled." -ForegroundColor Yellow
 Write-Host "        For production use, WHQL-signed drivers require an EV cert." -ForegroundColor DarkGray
 Write-Host ""
 if (-not (Read-Confirmation "Continue with installation?")) {
@@ -85,7 +85,7 @@ if (-not (Read-Confirmation "Continue with installation?")) {
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 1 — OS prep: test-signing
 # ─────────────────────────────────────────────────────────────────────────────
-Write-Step 1 "OS prep — test-signing mode"
+Write-Step 1 "OS prep - test-signing mode"
 
 $bcdedit = (bcdedit /enum '{current}' 2>$null) -join "`n"
 $tsOn = $bcdedit -match 'testsigning\s+Yes'
@@ -99,11 +99,11 @@ if ($tsOn) {
     Write-Ok "bcdedit /set testsigning on"
 
     Write-Host ""
-    Write-Host "  ┌────────────────────────────────────────────────────────────┐" -ForegroundColor Yellow
-    Write-Host "  │  A REBOOT IS REQUIRED before drivers can be installed.     │" -ForegroundColor Yellow
-    Write-Host "  │  After rebooting, re-run this script — Step 1 will be      │" -ForegroundColor Yellow
-    Write-Host "  │  skipped automatically and installation will continue.     │" -ForegroundColor Yellow
-    Write-Host "  └────────────────────────────────────────────────────────────┘" -ForegroundColor Yellow
+    Write-Host "  +------------------------------------------------------------+" -ForegroundColor Yellow
+    Write-Host "  |  A REBOOT IS REQUIRED before drivers can be installed.     |" -ForegroundColor Yellow
+    Write-Host "  |  After rebooting, re-run this script - Step 1 will be      |" -ForegroundColor Yellow
+    Write-Host "  |  skipped automatically and installation will continue.     |" -ForegroundColor Yellow
+    Write-Host "  +------------------------------------------------------------+" -ForegroundColor Yellow
     Write-Host ""
 
     if (Read-Confirmation "Reboot now?") {
@@ -149,7 +149,7 @@ if (Test-Path $driversSrc) {
     }
     Write-Ok "Copied $count driver files to $DriversDir"
 } else {
-    Write-Fail "drivers\ folder not found in package — cannot proceed"
+    Write-Fail "drivers\ folder not found in package - cannot proceed"
     Read-Host "Press Enter to exit"
     exit 1
 }
@@ -191,7 +191,7 @@ if ($svc) {
     }
     & $ServiceExe install
     if ($LASTEXITCODE -eq 0) { Write-Ok "KVMService registered" }
-    else                     { Write-Warn "KVMService.exe install returned $LASTEXITCODE — check event log" }
+    else                     { Write-Warn "KVMService.exe install returned $LASTEXITCODE - check event log" }
 }
 
 
@@ -207,7 +207,7 @@ try {
     if ($svc.Status -eq 'Running') {
         Write-Ok "KVMService is RUNNING"
     } else {
-        Write-Warn "KVMService status: $($svc.Status)  — check $LogDir\KVMService.log"
+        Write-Warn "KVMService status: $($svc.Status)  - check $LogDir\KVMService.log"
     }
 } catch {
     Write-Warn "Could not start service: $_"
@@ -217,10 +217,10 @@ try {
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 6 — Tray: set autostart + launch now
 # ─────────────────────────────────────────────────────────────────────────────
-Write-Step 6 "Configuring KVMTray — autostart at login + launch"
+Write-Step 6 "Configuring KVMTray - autostart at login + launch"
 
 if (-not (Test-Path $TrayExe)) {
-    Write-Warn "KVMTray.exe not found at $TrayExe — skipping tray setup"
+    Write-Warn "KVMTray.exe not found at $TrayExe - skipping tray setup"
 } else {
     # Write HKLM Run key (all users)
     $runKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
@@ -236,7 +236,7 @@ if (-not (Test-Path $TrayExe)) {
         if (Get-Process 'KVMTray' -ErrorAction SilentlyContinue) {
             Write-Ok "KVMTray launched"
         } else {
-            Write-Warn "KVMTray did not appear in process list — .NET 8 runtime may be missing"
+            Write-Warn "KVMTray did not appear in process list - .NET 8 runtime may be missing"
             Write-Warn "Install: winget install Microsoft.DotNet.DesktopRuntime.8"
         }
     }
@@ -261,7 +261,7 @@ $listening = netstat -an 2>$null | Select-String ':8080|:8443|:5900'
 if ($listening) {
     $listening | ForEach-Object { Write-Host "    $_" -ForegroundColor Green }
 } else {
-    Write-Warn "No KVM ports LISTENING yet — service may still be starting"
+    Write-Warn "No KVM ports LISTENING yet - service may still be starting"
 }
 
 Write-Host ""
@@ -272,7 +272,7 @@ if ($devs) {
     $devs | Format-Table FriendlyName, Status, Class -AutoSize |
             Out-String | ForEach-Object { Write-Host "  $_" }
 } else {
-    Write-Warn "No KVM devices visible yet — a reboot may be needed for drivers to enumerate"
+    Write-Warn "No KVM devices visible yet - a reboot may be needed for drivers to enumerate"
 }
 
 
@@ -295,18 +295,18 @@ $localIP = (Get-NetIPAddress -AddressFamily IPv4 |
             Select-Object -First 1).IPAddress
 
 Write-Host ""
-Write-Host "  ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Green
-Write-Host "  ║   Installation complete!                                     ║" -ForegroundColor Green
-Write-Host "  ╠══════════════════════════════════════════════════════════════╣" -ForegroundColor Green
-Write-Host "  ║                                                              ║" -ForegroundColor Green
-Write-Host "  ║  Web client :  http://${localIP}:8080/                      " -ForegroundColor Green
-Write-Host "  ║  VNC        :  ${localIP}:5900                              " -ForegroundColor Green
-Write-Host "  ║  WebSocket  :  ws://${localIP}:8443                         " -ForegroundColor Green
-Write-Host "  ║                                                              ║" -ForegroundColor Green
-Write-Host "  ║  Log file   :  $LogDir\KVMService.log " -ForegroundColor Green
-Write-Host "  ║                                                              ║" -ForegroundColor Green
-Write-Host "  ║  First remote connection will show an approval dialog        ║" -ForegroundColor Green
-Write-Host "  ║  in the tray.  Localhost connections are auto-approved.      ║" -ForegroundColor Green
-Write-Host "  ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Host "  +==============================================================+" -ForegroundColor Green
+Write-Host "  |   Installation complete!                                     |" -ForegroundColor Green
+Write-Host "  +==============================================================+" -ForegroundColor Green
+Write-Host "  |                                                              |" -ForegroundColor Green
+Write-Host "  |  Web client :  http://${localIP}:8080/                        |" -ForegroundColor Green
+Write-Host "  |  VNC        :  ${localIP}:5900                                |" -ForegroundColor Green
+Write-Host "  |  WebSocket  :  ws://${localIP}:8443                           |" -ForegroundColor Green
+Write-Host "  |                                                              |" -ForegroundColor Green
+Write-Host "  |  Log file   :  $LogDir\KVMService.log                          |" -ForegroundColor Green
+Write-Host "  |                                                              |" -ForegroundColor Green
+Write-Host "  |  First remote connection will show an approval dialog         |" -ForegroundColor Green
+Write-Host "  |  in the tray.  Localhost connections are auto-approved.       |" -ForegroundColor Green
+Write-Host "  +==============================================================+" -ForegroundColor Green
 Write-Host ""
 Read-Host "  Press Enter to close"
