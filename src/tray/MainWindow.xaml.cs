@@ -109,6 +109,46 @@ namespace KVM.Tray
                 WindowState = WindowState.Minimized;
                 Hide();
             }
+
+            // First-run firewall check: if any KVM rules are missing, offer to fix
+            CheckFirewallOnStartup();
+        }
+
+        private async void CheckFirewallOnStartup()
+        {
+            // Run in background — don't block UI startup
+            await Task.Delay(2000);  // wait until window is fully shown
+
+            bool anyMissing = await Task.Run(() =>
+            {
+                var results = DiagnosticsEngine.RunDriverHealthChecks();
+                return results.Any(r =>
+                    r.RepairAction != null &&
+                    r.RepairAction.StartsWith("firewall:") &&
+                    r.Severity == DiagSeverity.Warning);
+            });
+
+            if (!anyMissing) return;
+
+            var answer = MessageBox.Show(
+                "Windows Firewall is blocking one or more KVM-Drivers ports.\n\n" +
+                "This will prevent remote clients from connecting.\n\n" +
+                "Add the required inbound rules now?\n" +
+                "(ports: 8443 WebSocket, 5900 VNC, 8080 Web Client HTTP)",
+                "Firewall Configuration Required",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (answer == MessageBoxResult.Yes)
+            {
+                var (ok, msg) = await Task.Run(() => DiagnosticsEngine.AddAllFirewallRules());
+                AppendLog($"[Firewall] Startup fix: {msg.Replace("\n", " | ")}");
+                if (!ok)
+                    MessageBox.Show(
+                        "Some rules could not be added.\n" +
+                        "Run the tray as Administrator and use Diagnostics → Fix All Firewall Rules.",
+                        "Firewall", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
 
         private void AutoStartDrivers()
@@ -536,7 +576,7 @@ namespace KVM.Tray
                 settings.WsMaxClients = wsMax;
 
             settings.VncRequireAuth = VncRequireAuth.IsChecked ?? true;
-            settings.UseTls         = UseTls.IsChecked ?? true;
+            settings.UseTls         = UseTls.IsChecked ?? false;
             settings.VncAnonTls       = VncAnonTls.IsChecked ?? false;
             settings.VncCertPin       = VncCertPin.Text?.Trim() ?? "";
             settings.RequireRemoteAuth = RequireRemoteAuth.IsChecked ?? true;
