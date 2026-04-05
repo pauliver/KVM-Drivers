@@ -3,25 +3,75 @@
 ## Prerequisites
 
 | Component | Version | Required For |
-|-----------|---------|--------------|
+|-----------|---------|-------------- |
 | Windows | 10/11 64-bit | Building, running drivers |
-| Visual Studio | 2022 Community+ | Compilation |
-| Windows Driver Kit | Windows 11 WDK | Kernel drivers |
-| Windows SDK | 10.0.22621.0+ | Headers, libraries |
+| Visual Studio | 2022 or 2026 (v18) | Compilation |
+| Windows SDK | 10.0.26100.0 | Headers, libraries |
 | .NET 8 SDK | 8.0.x | Tray application |
 | Git | 2.35+ | Source control |
+| WDK *(one of three options)* | 10.0.26100.x | Kernel drivers only |
 
 ### Installing Prerequisites
 
-**Visual Studio 2022 Workloads:**
+**Visual Studio Workloads (VS 2022 / VS 2026):**
 - Desktop development with C++
-- Windows Driver development
+- .NET desktop development
 
-**WDK Installation:**
+---
+
+### Kernel Driver Build — Three Options
+
+The kernel drivers (`vhidkb`, `vhidmouse`, `vxinput`, `vdisplay`) require the
+`WindowsKernelModeDriver10.0` MSBuild platform toolset.  On **VS 2026 (v18)**
+the VS-integrated WDK extension may not yet be published.  Three strategies are
+supported; `scripts/build_drivers.bat` tries them in order automatically.
+
+#### Option A — WDK VS Integration (cleanest, recommended for local dev)
+
 ```powershell
-# Download from Microsoft and install
-# https://learn.microsoft.com/en-us/windows-hardware/drivers/download-the-wdk
+# 1. Download the WDK installer
+#    https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
+# 2. Run the installer; tick "Windows Driver Kit Visual Studio Extension"
+# 3. Build normally:
+scripts\build_drivers.bat Release
 ```
+
+After installation the toolset appears at:
+`C:\Program Files (x86)\Windows Kits\10\build\10.0.26100.0\`
+
+#### Option B — NuGet WDK Packages (CI/CD, VS2026 fallback — no installer needed)
+
+Each driver project already contains a `packages.config` that references:
+- `Microsoft.Windows.WDK.x64 10.0.26100.2454`
+- `Microsoft.Windows.SDK.CPP 10.0.26100.56`
+- `Microsoft.Windows.SDK.CPP.x64 10.0.26100.56`
+
+```powershell
+# Requires nuget.exe on PATH (or the script downloads it automatically)
+winget install Microsoft.NuGet   # one-time setup
+scripts\build_drivers.bat Release
+```
+
+The script restores packages to `packages\` in the repo root and passes
+`/p:WDKContentRoot` / `/p:WindowsSdkDir` overrides to MSBuild so no global
+install is needed.
+
+#### Option C — Enterprise WDK (EWDK, fully self-contained)
+
+The EWDK is a single ISO that boots a complete build environment — no VS or
+WDK installer required.  Suitable for air-gapped or locked-down machines.
+
+```powershell
+# 1. Download EWDK ISO from the same page as Option A
+# 2. Mount it:
+Mount-DiskImage -ImagePath C:\path\to\EWDK_26100_xxx.iso
+# 3. Launch the EWDK environment (sets PATH, INCLUDE, LIB, etc.):
+D:\LaunchBuildEnv.cmd
+# 4. Inside that environment:
+scripts\build_drivers.bat Release
+```
+
+---
 
 ## Building
 
@@ -29,26 +79,34 @@
 
 ```powershell
 cd P:\KVM-Drivers
-.\scripts\build.bat Release all
+
+# KVMService.exe + KVMTray.exe (no WDK needed)
+scripts\build_service.bat Release
+
+# Kernel drivers (auto-selects best available strategy)
+scripts\build_drivers.bat Release
+
+# Or everything via the umbrella script:
+scripts\build.bat Release all
 ```
 
-### Build Options
+### Build Script Reference
 
-| Command | Description |
-|---------|-------------|
-| `build.bat Release all` | Build everything (Release) |
-| `build.bat Debug all` | Build everything (Debug) |
-| `build.bat Release drivers` | Build kernel drivers only |
-| `build.bat Release usermode` | Build applications only |
-| `build.bat Release tests` | Build test suite only |
-| `build.bat clean` | Clean all build artifacts |
+| Script | Description |
+|--------|-------------|
+| `scripts\build_service.bat [Release\|Debug]` | KVMService.exe — direct cl.exe compile, no MSBuild toolset needed |
+| `scripts\build_drivers.bat [Release\|Debug]` | Kernel .sys drivers — tries WDK integration → NuGet → EWDK in order |
+| `scripts\build.bat Release all` | Umbrella: drivers + service + tray |
+| `scripts\build.bat Release usermode` | Service + tray only |
+| `scripts\build.bat Release drivers` | Drivers only |
+| `scripts\build.bat clean` | Remove build\ |
 
-### Visual Studio Build
+### Visual Studio Build (optional)
 
-1. Open `KVM-Drivers.sln` in Visual Studio 2022
-2. Select Configuration: `Release` or `Debug`
-3. Select Platform: `x64`
-4. Build → Build Solution (Ctrl+Shift+B)
+1. Open `KVM-Drivers.sln` in VS 2022 or VS 2026
+2. Select **Release | x64**
+3. **Build → Build Solution** (Ctrl+Shift+B)
+4. Requires WDK VS extension for kernel driver projects (see Options A/B/C above)
 
 ### Build Output Structure
 
