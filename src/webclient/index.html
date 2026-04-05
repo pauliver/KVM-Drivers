@@ -584,6 +584,14 @@
                     if (msg.method === 'display.frame') {
                         // Server pushed a base64 JPEG frame
                         handleVideoFrame(msg.params);
+                    } else if (msg.method === 'input.controller.assigned') {
+                        // Server auto-assigned a gamepad player slot
+                        const slot = msg.params && msg.params.slot;
+                        if (slot !== undefined) {
+                            showNotification(`Gamepad assigned: Player ${slot + 1}`, 'success');
+                            document.getElementById('statusText').textContent =
+                                `Connected — Player ${slot + 1}`;
+                        }
                     } else if (msg.method === 'display.resolution_change') {
                         const { width, height } = msg.params;
                         canvas.width  = width;

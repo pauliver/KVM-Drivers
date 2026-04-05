@@ -1196,6 +1196,24 @@ bool AsyncWebSocketServer::InitCapture() {
     return true;
 }
 
+// ── Encoder pipeline architecture note ────────────────────────────────────────
+// The hardware encoders (NVENC / AMD AMF / Intel QSV) live in
+// video_pipeline.cpp / encoder_manager.cpp and produce H.264 packets.
+// Currently THIS server uses its own direct DXGI → GDI+ JPEG path instead.
+//
+// The two pipelines are NOT connected. To hook them up:
+//   1. Replace EncodeFrameJPEG() with EncoderManager::EncodeFrame() calls.
+//   2. Wrap H.264 NAL units in fragmented MP4 (fMP4) so that the browser's
+//      Media Source Extensions (MSE) API can consume them:
+//        - Initialization segment: send once (SPS/PPS wrapped in MOOV box).
+//        - Media segments: send each MOOF+MDAT pair per keyframe/GOP.
+//   3. Update the web client to use a <video> element with MediaSource instead
+//      of the current createImageBitmap() / Canvas approach.
+//
+// Until that work is done, JPEG binary frames are the delivery path.
+// JPEG is ~100-200 KB/frame @ 1080p vs. ~10 KB/frame with H.264 CBR 4 Mbps.
+// ────────────────────────────────────────────────────────────────────────────────
+
 void AsyncWebSocketServer::StartCapture() {
     if (streamRunning_) return;
     if (!InitCapture()) {
