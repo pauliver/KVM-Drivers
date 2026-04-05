@@ -166,6 +166,15 @@ NTSTATUS vhidkbEvtDeviceAdd(
         return status;
     }
 
+    // Expose \Device\vhidkb / \DosDevices\vhidkb so user-mode can open \\.\vhidkb
+    {
+        DECLARE_CONST_UNICODE_STRING(symLink, L"\\DosDevices\\vhidkb");
+        NTSTATUS slStatus = WdfDeviceCreateSymbolicLink(device, &symLink);
+        if (!NT_SUCCESS(slStatus)) {
+            KdPrint(("vhidkb: WdfDeviceCreateSymbolicLink failed 0x%x (non-fatal)\n", slStatus));
+        }
+    }
+
     KdPrint(("vhidkb: VHF virtual keyboard started\n"));
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
     return STATUS_SUCCESS;
@@ -221,10 +230,9 @@ VOID vhidkbEvtIoDeviceControl(
         break;
 
     default:
-        // Pass through to lower driver
-        WdfRequestFormatRequestUsingCurrentStackLocation(Request);
-        WdfRequestSend(Request, WdfDeviceGetIoTarget(device), WDF_NO_SEND_OPTIONS);
-        return;
+        // Standalone VHF device — no lower driver to forward to.
+        status = STATUS_INVALID_DEVICE_REQUEST;
+        break;
     }
 
     WdfRequestComplete(Request, status);
@@ -348,20 +356,18 @@ NTSTATUS vhidkbInjectKeyUp(
 {
     UNREFERENCED_PARAMETER(Request);
 
-    // Clear all key codes (send empty report)
+    // Send all-zeroes report: both key codes AND modifier keys must be cleared
+    // so that held modifiers (Ctrl, Shift, Alt, etc.) are released.
     UCHAR emptyKeys[VKB_MAX_KEYS] = {0};
-    
-    NTSTATUS status = vhidkbSendHidReport(DeviceContext, 
-        DeviceContext->CurrentModifierKeys, 
-        emptyKeys, 
-        VKB_MAX_KEYS);
+    NTSTATUS status = vhidkbSendHidReport(DeviceContext, 0, emptyKeys, 0);
 
-    // Clear state
+    // Clear full keyboard state
+    DeviceContext->CurrentModifierKeys = 0;
     for (int i = 0; i < VKB_MAX_KEYS; i++) {
         DeviceContext->CurrentKeyCodes[i] = 0;
     }
 
-    KdPrint(("vhidkb: InjectKeyUp - All keys released\n"));
+    KdPrint(("vhidkb: InjectKeyUp - All keys and modifiers released\n"));
     return status;
 }
 

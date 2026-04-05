@@ -2,15 +2,16 @@
 
 #include <ntddk.h>
 #include <wdf.h>
+#include <vhf.h>
 
 #define POOL_TAG 'mouV'
 
-// Mouse context structure
+// Mouse context structure — one instance per WDFDEVICE
 typedef struct _MOUSE_CONTEXT {
     WDFDEVICE Device;
-    LONG LastX;             // Last X position (for absolute)
-    LONG LastY;             // Last Y position (for absolute)
-    UCHAR ButtonState;      // Current button state bitmask
+    VHFHANDLE VhfHandle;        // VHF virtual mouse source handle
+    KSPIN_LOCK ButtonLock;      // Protects ButtonState under parallel dispatch
+    UCHAR ButtonState;          // Current 5-button bitmask (persists across reports)
 } MOUSE_CONTEXT, *PMOUSE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(MOUSE_CONTEXT, vhidmouseGetContext)

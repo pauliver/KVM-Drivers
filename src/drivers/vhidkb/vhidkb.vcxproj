@@ -72,8 +72,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="vhidkb.c" />
-    <ClCompile Include="device.c" />
-    <ClCompile Include="queue.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="vhidkb.h" />

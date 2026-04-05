@@ -111,17 +111,17 @@ NTSTATUS vxinputEvtDeviceAdd(
     PAGED_CODE();
 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&devAttr, VXINPUT_BUS_CONTEXT);
+    devAttr.EvtCleanupCallback = vxinputEvtDeviceCleanup;  // Release VHF handles on removal
     status = WdfDeviceCreate(&DeviceInit, &devAttr, &device);
     if (!NT_SUCCESS(status)) {
         KdPrint(("vxinput: WdfDeviceCreate failed 0x%x\n", status));
         return status;
     }
 
-    // Initialise bus context
+    // Initialise bus context (RtlZeroMemory already zeros VhfHandle[4] array)
     busCtx = vxinputGetBusContext(device);
     RtlZeroMemory(busCtx, sizeof(VXINPUT_BUS_CONTEXT));
-    busCtx->BusDevice  = device;
-    busCtx->VhfHandle  = NULL;
+    busCtx->BusDevice = device;
     InitializeListHead(&busCtx->ControllerList);
     KeInitializeSpinLock(&busCtx->ControllerListLock);
 
