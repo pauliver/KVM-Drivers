@@ -340,7 +340,7 @@
             
             <div class="connection-panel">
                 <div class="panel-title">Connection</div>
-                <input type="text" id="serverHost" placeholder="Host (e.g., localhost)" value="localhost">
+                <input type="text" id="serverHost" placeholder="Host (e.g., localhost)">
                 <input type="text" id="serverPort" placeholder="Port" value="8443">
                 <input type="password" id="authToken" placeholder="Auth Token (optional)">
                 <button id="connectBtn" onclick="toggleConnection()">Connect</button>
@@ -470,6 +470,14 @@
         
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
+            // Default server host to whoever served this page so that when the
+            // KVM HTTP server delivers index.html from http://192.168.1.x:8080/
+            // the WebSocket connection auto-targets the same machine.
+            const hostField = document.getElementById('serverHost');
+            if (hostField && !hostField.value) {
+                hostField.value = window.location.hostname || 'localhost';
+            }
+
             setupInputHandlers();
             requestAnimationFrame(updateStats);
         });
