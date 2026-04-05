@@ -57,6 +57,14 @@ namespace KVM.Tray
 
         public static ObservableCollection<AuditEntry> AuditLog => auditLog;
 
+        // Ports that need inbound firewall rules
+        private static readonly (int Port, string Name)[] RequiredPorts =
+        {
+            (5900, "KVM-VNC"),
+            (8443, "KVM-WebSocket"),
+            (8080, "KVM-WebClient-HTTP"),
+        };
+
         // Run all driver health checks and return results
         public static List<DiagResult> RunDriverHealthChecks()
         {
@@ -87,6 +95,10 @@ namespace KVM.Tray
             results.Add(CheckPortAvailability(5900, "VNC"));
             results.Add(CheckPortAvailability(8443, "WebSocket"));
 
+            // Check Windows Firewall rules for all required ports
+            foreach (var (port, name) in RequiredPorts)
+                results.Add(CheckFirewallRule(port, name));
+
             // Check disk space for log files
             results.Add(CheckDiskSpace());
 
@@ -94,6 +106,96 @@ namespace KVM.Tray
             results.Add(CheckPendingReboot());
 
             return results;
+        }
+
+        // --- Firewall helpers ---
+
+        private static DiagResult CheckFirewallRule(int port, string ruleName)
+        {
+            bool ruleExists = FirewallRuleExists(ruleName);
+            return new DiagResult
+            {
+                Check       = $"Firewall rule: {ruleName} (:{port})",
+                Severity    = ruleExists ? DiagSeverity.Ok : DiagSeverity.Warning,
+                Message     = ruleExists
+                    ? $"Inbound allow rule '{ruleName}' present for TCP {port}"
+                    : $"No inbound firewall rule for TCP {port} ({ruleName}) — remote clients will be blocked by Windows Firewall",
+                RepairAction = ruleExists ? null : $"firewall:{port}:{ruleName}"
+            };
+        }
+
+        private static bool FirewallRuleExists(string ruleName)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("netsh",
+                    $"advfirewall firewall show rule name=\"{ruleName}\"")
+                {
+                    RedirectStandardOutput = true,
+                    UseShellExecute        = false,
+                    CreateNoWindow         = true
+                };
+                using var p = Process.Start(psi);
+                string output = p?.StandardOutput.ReadToEnd() ?? "";
+                p?.WaitForExit(3000);
+                return output.Contains("Allow") || output.Contains("LocalPort");
+            }
+            catch { return false; }
+        }
+
+        public static (bool success, string message) AddFirewallRule(int port, string ruleName)
+        {
+            try
+            {
+                // Remove stale rule first (idempotent)
+                RunNetsh($"advfirewall firewall delete rule name=\"{ruleName}\"");
+
+                string args = $"advfirewall firewall add rule " +
+                              $"name=\"{ruleName}\" " +
+                              $"dir=in action=allow protocol=TCP localport={port} " +
+                              $"description=\"KVM-Drivers inbound TCP {port}\"";
+
+                var psi = new ProcessStartInfo("netsh", args)
+                {
+                    Verb            = "runas",         // elevate
+                    UseShellExecute = true,
+                    CreateNoWindow  = true
+                };
+                var p = Process.Start(psi);
+                p?.WaitForExit(10000);
+                bool ok = p?.ExitCode == 0;
+                return (ok, ok
+                    ? $"Firewall rule '{ruleName}' added for TCP {port}"
+                    : $"netsh returned exit code {p?.ExitCode} — try running as Administrator");
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Failed to add firewall rule: {ex.Message}");
+            }
+        }
+
+        public static (bool success, string message) AddAllFirewallRules()
+        {
+            var sb = new StringBuilder();
+            bool allOk = true;
+            foreach (var (port, name) in RequiredPorts)
+            {
+                var (ok, msg) = AddFirewallRule(port, name);
+                sb.AppendLine(msg);
+                if (!ok) allOk = false;
+            }
+            return (allOk, sb.ToString().TrimEnd());
+        }
+
+        private static void RunNetsh(string args)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("netsh", args)
+                { UseShellExecute = false, CreateNoWindow = true };
+                Process.Start(psi)?.WaitForExit(3000);
+            }
+            catch { }
         }
 
         // Attempt auto-repair for a result that has a RepairAction
@@ -106,6 +208,14 @@ namespace KVM.Tray
             {
                 string driverName = result.RepairAction.Substring(8);
                 return RepairDriverInstallation(driverName);
+            }
+
+            if (result.RepairAction.StartsWith("firewall:"))
+            {
+                // Format: "firewall:<port>:<ruleName>"
+                var parts = result.RepairAction.Split(':', 3);
+                if (parts.Length == 3 && int.TryParse(parts[1], out int port))
+                    return AddFirewallRule(port, parts[2]);
             }
 
             return (false, $"Unknown repair action: {result.RepairAction}");

@@ -13,9 +13,12 @@ namespace KVM.Tray
         // Network settings
         public int VncPort { get; set; } = 5900;
         public int WebSocketPort { get; set; } = 8443;
+        public int HttpPort { get; set; } = 8080;  // HTTP port that serves index.html (web client)
         public bool VncRequireAuth { get; set; } = true;
         public string VncPassword { get; set; } = "";
-        public bool UseTls { get; set; } = true;
+        // UseTls = false: the WebSocket server runs plain ws:// by default.
+        // The TLS infrastructure (tls_server.cpp) exists but is not yet wired.
+        public bool UseTls { get; set; } = false;
         public string TlsCertificatePath { get; set; } = "";
         
         // Driver settings

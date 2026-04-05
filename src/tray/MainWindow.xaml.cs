@@ -2,11 +2,15 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using System.ComponentModel;
@@ -69,10 +73,12 @@ namespace KVM.Tray
         private void ApplySettings()
         {
             // Apply network settings
-            VncPort.Text = settings.VncPort.ToString();
-            WsPort.Text = settings.WebSocketPort.ToString();
+            VncPort.Text  = settings.VncPort.ToString();
+            WsPort.Text   = settings.WebSocketPort.ToString();
+            HttpPort.Text = settings.HttpPort.ToString();
             VncRequireAuth.IsChecked = settings.VncRequireAuth;
             UseTls.IsChecked = settings.UseTls;
+            RefreshConnectionUrls();
 
             // Apply IP allowlist
             if (settings.AllowedIPs != null && settings.AllowedIPs.Length > 0)
@@ -118,14 +124,40 @@ namespace KVM.Tray
         {
             connections = new ObservableCollection<ConnectionInfo>();
             ConnectionsList.ItemsSource = connections;
-            
-            // Add sample data for now
-            connections.Add(new ConnectionInfo 
-            { 
-                ClientIP = "192.168.1.100", 
-                ConnectionType = "VNC", 
-                ConnectTime = DateTime.Now.ToString("HH:mm:ss") 
-            });
+            // No fake data — list starts empty and fills as clients connect
+        }
+
+        private void RefreshConnectionUrls()
+        {
+            try
+            {
+                string localIp = GetLocalIPv4();
+                int wsPort   = settings.WebSocketPort;
+                int httpPort = settings.HttpPort;
+                int vncPort  = settings.VncPort;
+
+                if (WebClientUrl != null)
+                    WebClientUrl.Text = $"http://{localIp}:{httpPort}/";
+                if (VncUrl != null)
+                    VncUrl.Text = $"{localIp}:{vncPort}";
+            }
+            catch { }
+        }
+
+        private static string GetLocalIPv4()
+        {
+            try
+            {
+                using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                socket.Connect("8.8.8.8", 65530);
+                return ((IPEndPoint)socket.LocalEndPoint!).Address.ToString();
+            }
+            catch
+            {
+                return Dns.GetHostEntry(Dns.GetHostName())
+                    .AddressList.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork)
+                    ?.ToString() ?? "localhost";
+            }
         }
 
         private void SetupTimer()
@@ -143,8 +175,27 @@ namespace KVM.Tray
 
         private void UpdateDriverStatus()
         {
-            // Check actual driver status via service or driver interface
-            // For now, just UI refresh
+            UpdateSingleDriver("vhidkb",    KeyboardStatus,   KeyboardState,   KeyboardToggle);
+            UpdateSingleDriver("vhidmouse", MouseStatus,      MouseState,      MouseToggle);
+            UpdateSingleDriver("vxinput",   ControllerStatus, ControllerState, ControllerToggle);
+            UpdateSingleDriver("vdisplay",  DisplayStatus,    DisplayState,    DisplayToggle);
+        }
+
+        private static void UpdateSingleDriver(
+            string serviceName, Ellipse dot, TextBlock state, Button btn)
+        {
+            if (dot == null) return;
+            bool running = false;
+            try
+            {
+                using var sc = new System.ServiceProcess.ServiceController(serviceName);
+                running = sc.Status == System.ServiceProcess.ServiceControllerStatus.Running;
+            }
+            catch { /* driver not installed = not running */ }
+
+            dot.Fill   = running ? Brushes.Green : Brushes.Gray;
+            if (state != null) state.Text = running ? "Running" : "Stopped";
+            if (btn   != null) btn.Content = running ? "Stop"    : "Start";
         }
 
         // Driver Control Events
@@ -388,6 +439,45 @@ namespace KVM.Tray
                 "HealthCheck", $"{results.Count} checks: {errors} errors, {warnings} warnings");
         }
 
+        // ── Firewall button ──────────────────────────────────────────────────────
+        private async void FixAllFirewall_Click(object sender, RoutedEventArgs e)
+        {
+            FixFirewallBtn.IsEnabled = false;
+            DiagStatus.Text = "Adding firewall rules (requires elevation)…";
+
+            var (success, message) = await Task.Run(
+                () => DiagnosticsEngine.AddAllFirewallRules());
+
+            MessageBox.Show(message,
+                success ? "Firewall rules added" : "Some rules may not have been added",
+                MessageBoxButton.OK,
+                success ? MessageBoxImage.Information : MessageBoxImage.Warning);
+
+            DiagStatus.Text = success ? "Firewall rules configured ✅" : "Check output — some rules may need manual adding";
+            AppendLog($"[Firewall] {(success ? "All rules added" : "Partial")}: {message.Replace("\n", " | ")}");
+            FixFirewallBtn.IsEnabled = true;
+        }
+
+        // ── Web client URL handlers ──────────────────────────────────────────────
+        private void WebClientUrl_Click(object sender, RoutedEventArgs e)
+            => OpenWebClient();
+
+        private void WebClientUrl_Click(object sender, MouseButtonEventArgs e)
+            => OpenWebClient();
+
+        private void OpenWebClient()
+        {
+            try { Process.Start(new ProcessStartInfo(WebClientUrl.Text) { UseShellExecute = true }); }
+            catch (Exception ex) { MessageBox.Show($"Could not open browser: {ex.Message}"); }
+        }
+
+        private void CopyWebUrl_Click(object sender, RoutedEventArgs e)
+        {
+            Clipboard.SetText(WebClientUrl.Text);
+            AppendLog($"[Clipboard] Web client URL copied: {WebClientUrl.Text}");
+        }
+        // ────────────────────────────────────────────────────────────────────────
+
         private async void RepairSelected_Click(object sender, RoutedEventArgs e)
         {
             var selected = DiagResultsList.SelectedItem as DiagResult;
@@ -435,6 +525,9 @@ namespace KVM.Tray
 
             if (int.TryParse(WsPort.Text, out int wsPort))
                 settings.WebSocketPort = wsPort;
+
+            if (int.TryParse(HttpPort.Text, out int httpPort))
+                settings.HttpPort = httpPort;
 
             if (int.TryParse(VncMaxClients.Text, out int vncMax))
                 settings.VncMaxClients = vncMax;
