@@ -186,28 +186,52 @@
       </Component>
     </ComponentGroup>
     
-    <!-- Custom Actions -->
-    <CustomAction Id="InstallDrivers" 
-                  Directory="DRIVERSFOLDER" 
-                  Execute="deferred" 
-                  Impersonate="no" 
-                  Return="check"
-                  ExeCommand="[System64Folder]pnputil.exe /add-driver [DRIVERSFOLDER]vhidkb.inf /install" />
-    
-    <CustomAction Id="UninstallDrivers" 
-                  Directory="DRIVERSFOLDER" 
-                  Execute="deferred" 
-                  Impersonate="no" 
+    <!-- Custom Actions: install each driver separately so a single failure
+         does not block the others.  Return="ignore" lets setup continue even
+         if a driver is already installed (pnputil exit-code 259). -->
+    <CustomAction Id="InstallVhidkb"
+                  Directory="DRIVERSFOLDER"
+                  Execute="deferred"
+                  Impersonate="no"
                   Return="ignore"
-                  ExeCommand="[System64Folder]pnputil.exe /delete-driver oem*.inf /uninstall" />
-    
+                  ExeCommand="[System64Folder]pnputil.exe /add-driver [DRIVERSFOLDER]vhidkb.inf /install" />
+
+    <CustomAction Id="InstallVhidmouse"
+                  Directory="DRIVERSFOLDER"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore"
+                  ExeCommand="[System64Folder]pnputil.exe /add-driver [DRIVERSFOLDER]vhidmouse.inf /install" />
+
+    <CustomAction Id="InstallVxinput"
+                  Directory="DRIVERSFOLDER"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore"
+                  ExeCommand="[System64Folder]pnputil.exe /add-driver [DRIVERSFOLDER]vxinput.inf /install" />
+
+    <CustomAction Id="InstallVdisplay"
+                  Directory="DRIVERSFOLDER"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore"
+                  ExeCommand="[System64Folder]pnputil.exe /add-driver [DRIVERSFOLDER]vdisplay.inf /install" />
+
+    <!-- Uninstall: enumerate only the four known KVM-Drivers INFs by original
+         filename so we never accidentally remove unrelated OEM drivers. -->
+    <CustomAction Id="UninstallDrivers"
+                  Directory="DRIVERSFOLDER"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore"
+                  ExeCommand="cmd.exe /c &quot;for /f &quot;&quot;tokens=2 delims=: &quot;&quot; %a in ('pnputil /enum-drivers ^| findstr /i &quot;&quot;vhidkb.inf vhidmouse.inf vxinput.inf vdisplay.inf&quot;&quot;') do pnputil /delete-driver %a /uninstall /force&quot;" />
+
     <InstallExecuteSequence>
-      <Custom Action="InstallDrivers" After="InstallFiles">
-        <![CDATA[NOT Installed]]>
-      </Custom>
-      <Custom Action="UninstallDrivers" Before="RemoveFiles">
-        <![CDATA[Installed AND NOT UPGRADINGPRODUCTCODE]]>
-      </Custom>
+      <Custom Action="InstallVhidkb"    After="InstallFiles"><![CDATA[NOT Installed]]></Custom>
+      <Custom Action="InstallVhidmouse" After="InstallVhidkb"><![CDATA[NOT Installed]]></Custom>
+      <Custom Action="InstallVxinput"   After="InstallVhidmouse"><![CDATA[NOT Installed]]></Custom>
+      <Custom Action="InstallVdisplay"  After="InstallVxinput"><![CDATA[NOT Installed]]></Custom>
+      <Custom Action="UninstallDrivers" Before="RemoveFiles"><![CDATA[Installed AND NOT UPGRADINGPRODUCTCODE]]></Custom>
     </InstallExecuteSequence>
     
     <!-- UI Customization -->

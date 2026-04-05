@@ -1152,29 +1152,43 @@ void AsyncWebSocketServer::DisconnectClient(int clientIndex) {
             cslot, clientIP, CONTROLLER_HOLD_MS / 1000.0);
     }
 
-    // Clear streaming flag before closing
-    if (streamingClients_[clientIndex]) {
-        streamingClients_[clientIndex] = false;
-        int prev = streamClientCount_.fetch_sub(1);
-        if (prev <= 1) {
-            StopCapture();
-        }
-    }
-
+    // Snapshot the IP before we clear the struct
     char clientIP[INET_ADDRSTRLEN] = "unknown";
     inet_ntop(AF_INET, &clients_[clientIndex].address.sin_addr,
         clientIP, INET_ADDRSTRLEN);
+
+    // Clear streaming flag, connected, and buffers UNDER clientsMutex_ so that
+    // StreamLoop (which reads/writes these fields under the same lock) never
+    // sees a partially-disconnected client.  StopCapture() is deferred until
+    // AFTER the lock is released to avoid a deadlock: the stream thread itself
+    // acquires clientsMutex_ inside StreamLoop.
+    bool needStopCapture = false;
+    SOCKET socketToClose;
+    {
+        std::lock_guard<std::mutex> lock(clientsMutex_);
+        if (streamingClients_[clientIndex]) {
+            streamingClients_[clientIndex] = false;
+            int prev = streamClientCount_.fetch_sub(1);
+            needStopCapture = (prev <= 1);
+        }
+        socketToClose = clients_[clientIndex].socket;
+        clients_[clientIndex].socket     = INVALID_SOCKET;
+        clients_[clientIndex].connected  = false;
+        clients_[clientIndex].handshaked = false;
+        clients_[clientIndex].recvBuffer.clear();
+        clients_[clientIndex].sendBuffer.clear();
+    }
+
     ConnectionSecurityContext::Global().auditLog.LogDisconnect(
         clientIP, "WebSocket", "client disconnected");
     LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
         "Disconnecting client %d (%s)", clientIndex, clientIP);
 
-    closesocket(clients_[clientIndex].socket);
-    clients_[clientIndex].socket     = INVALID_SOCKET;
-    clients_[clientIndex].connected  = false;
-    clients_[clientIndex].handshaked = false;
-    clients_[clientIndex].recvBuffer.clear();
-    clients_[clientIndex].sendBuffer.clear();
+    closesocket(socketToClose);
+
+    // StopCapture outside the lock — stream thread holds clientsMutex_ during
+    // its encode loop, so joining it while holding the lock would deadlock.
+    if (needStopCapture) StopCapture();
 }
 
 // ============================================================
