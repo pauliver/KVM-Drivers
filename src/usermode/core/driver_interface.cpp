@@ -493,3 +493,173 @@ bool DriverInterface::InjectControllerReport(const XUSB_REPORT& report) {
 bool DriverInterface::IsDriverInjectionAvailable() const {
     return useDriverInjection.load();
 }
+
+int DriverInterface::ClaimControllerSlot() {
+    std::lock_guard<std::mutex> lock(handleMutex_);
+    if (controllerHandle == INVALID_HANDLE_VALUE) return -1;
+
+    for (int slot = 0; slot < 4; slot++) {
+        if (!controllerSlotClaimed_[slot]) {
+            // Ask the driver to create a VHF gamepad for this slot
+            XUSB_CONTROLLER_INFO info = {};
+            info.UserIndex = (ULONG)slot;
+            DWORD bytes = 0;
+            BOOL ok = DeviceIoControl(controllerHandle,
+                IOCTL_VXINPUT_CREATE_CONTROLLER,
+                &info, sizeof(info), NULL, 0, &bytes, NULL);
+            if (ok) {
+                controllerSlotClaimed_[slot] = true;
+                return slot;
+            }
+            // If driver IOCTL fails, still mark claimed so we can use legacy path
+            controllerSlotClaimed_[slot] = true;
+            return slot;
+        }
+    }
+    return -1;  // All 4 slots occupied
+}
+
+void DriverInterface::ReleaseControllerSlot(int slot) {
+    if (slot < 0 || slot >= 4) return;
+    std::lock_guard<std::mutex> lock(handleMutex_);
+    if (!controllerSlotClaimed_[slot]) return;
+
+    if (controllerHandle != INVALID_HANDLE_VALUE) {
+        XUSB_CONTROLLER_INFO info = {};
+        info.UserIndex = (ULONG)slot;
+        DWORD bytes = 0;
+        DeviceIoControl(controllerHandle,
+            IOCTL_VXINPUT_REMOVE_CONTROLLER,
+            &info, sizeof(info), NULL, 0, &bytes, NULL);
+    }
+    controllerSlotClaimed_[slot] = false;
+
+    // Send zero report so the game sees button-release before the controller disappears
+    XUSB_REPORT zero = {};
+    zero.bReportId = (BYTE)slot;
+    zero.bSize     = sizeof(XUSB_REPORT);
+    DWORD bytes = 0;
+    DeviceIoControl(controllerHandle,
+        IOCTL_VXINPUT_SUBMIT_REPORT,
+        &zero, sizeof(zero), NULL, 0, &bytes, NULL);
+}
+
+bool DriverInterface::IsControllerSlotClaimed(int slot) const {
+    if (slot < 0 || slot >= 4) return false;
+    std::lock_guard<std::mutex> lock(handleMutex_);
+    return controllerSlotClaimed_[slot];
+}
+
+bool DriverInterface::InjectControllerReportSlot(int slot, const XUSB_REPORT& report) {
+    if (slot < 0 || slot >= 4) return false;
+    std::lock_guard<std::mutex> lock(handleMutex_);
+    if (controllerHandle == INVALID_HANDLE_VALUE) return false;
+
+    XUSB_REPORT r = report;
+    r.bReportId = (BYTE)slot;   // slot encoded in bReportId for kernel routing
+    r.bSize     = sizeof(XUSB_REPORT);
+
+    DWORD bytes = 0;
+    return DeviceIoControl(controllerHandle,
+        IOCTL_VXINPUT_SUBMIT_REPORT,
+        &r, sizeof(r), NULL, 0, &bytes, NULL) != FALSE;
+}
+
+bool DriverInterface::SetControllerRumble(UCHAR leftMotor, UCHAR rightMotor) {
+    std::lock_guard<std::mutex> lock(handleMutex_);
+    if (controllerHandle == INVALID_HANDLE_VALUE) return false;
+
+    struct RumbleData { UCHAR left; UCHAR right; } data = { leftMotor, rightMotor };
+    DWORD bytesReturned = 0;
+    // IOCTL_VXINPUT_SET_RUMBLE = 0x22A014 (placeholder code same as submit+1)
+    BOOL ok = DeviceIoControl(controllerHandle,
+        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x805, METHOD_BUFFERED, FILE_ANY_ACCESS),
+        &data, sizeof(data), NULL, 0, &bytesReturned, NULL);
+    return ok != FALSE;
+}
+
+bool DriverInterface::GetDisplayInfo(UINT* width, UINT* height, UINT* refreshRate) {
+    // Try display driver first
+    if (displayHandle != INVALID_HANDLE_VALUE) {
+        struct DisplayInfo { UINT w; UINT h; UINT hz; } info = {};
+        DWORD bytes = 0;
+        BOOL ok = DeviceIoControl(displayHandle,
+            CTL_CODE(FILE_DEVICE_VIDEO, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS),
+            NULL, 0, &info, sizeof(info), &bytes, NULL);
+        if (ok && bytes >= sizeof(info)) {
+            if (width)       *width       = info.w;
+            if (height)      *height      = info.h;
+            if (refreshRate) *refreshRate = info.hz;
+            return true;
+        }
+    }
+    // Fallback: read from primary display adapter
+    DEVMODE dm = {};
+    dm.dmSize = sizeof(dm);
+    if (EnumDisplaySettings(NULL, ENUM_CURRENT_SETTINGS, &dm)) {
+        if (width)       *width       = dm.dmPelsWidth;
+        if (height)      *height      = dm.dmPelsHeight;
+        if (refreshRate) *refreshRate = dm.dmDisplayFrequency;
+        return true;
+    }
+    return false;
+}
+
+bool DriverInterface::SetDisplayResolution(int width, int height) {
+    // Try IDD virtual display driver first
+    if (displayHandle != INVALID_HANDLE_VALUE) {
+        struct ResData { int w; int h; } data = { width, height };
+        DWORD bytes = 0;
+        BOOL ok = DeviceIoControl(displayHandle,
+            CTL_CODE(FILE_DEVICE_VIDEO, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS),
+            &data, sizeof(data), NULL, 0, &bytes, NULL);
+        if (ok) return true;
+    }
+    // Fallback: CDS on primary monitor
+    DEVMODE dm = {};
+    dm.dmSize        = sizeof(dm);
+    dm.dmPelsWidth   = (DWORD)width;
+    dm.dmPelsHeight  = (DWORD)height;
+    dm.dmFields      = DM_PELSWIDTH | DM_PELSHEIGHT;
+    return ChangeDisplaySettings(&dm, 0) == DISP_CHANGE_SUCCESSFUL;
+}
+
+bool DriverInterface::CaptureFrame(void** frameData, size_t* size) {
+    // Minimal GDI screen capture returning a 24-bit BGR DIB.
+    // Caller owns the buffer and must delete[] it.
+    if (!frameData || !size) return false;
+
+    int w = GetSystemMetrics(SM_CXSCREEN);
+    int h = GetSystemMetrics(SM_CYSCREEN);
+
+    HDC screenDC = GetDC(NULL);
+    HDC memDC    = CreateCompatibleDC(screenDC);
+    HBITMAP hBmp = CreateCompatibleBitmap(screenDC, w, h);
+    HBITMAP hOld = (HBITMAP)SelectObject(memDC, hBmp);
+    BitBlt(memDC, 0, 0, w, h, screenDC, 0, 0, SRCCOPY);
+    SelectObject(memDC, hOld);
+    DeleteDC(memDC);
+    ReleaseDC(NULL, screenDC);
+
+    BITMAPINFOHEADER bi = {};
+    bi.biSize        = sizeof(bi);
+    bi.biWidth       = w;
+    bi.biHeight      = -h;    // top-down
+    bi.biPlanes      = 1;
+    bi.biBitCount    = 24;
+    bi.biCompression = BI_RGB;
+    size_t rowBytes  = (size_t)(((w * 3) + 3) & ~3);
+    size_t bytes     = rowBytes * (size_t)h;
+
+    BYTE* buf = new BYTE[bytes];
+    HDC dc = GetDC(NULL);
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader = bi;
+    GetDIBits(dc, hBmp, 0, (UINT)h, buf, &bmi, DIB_RGB_COLORS);
+    ReleaseDC(NULL, dc);
+    DeleteObject(hBmp);
+
+    *frameData = buf;
+    *size      = bytes;
+    return true;
+}

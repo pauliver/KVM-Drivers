@@ -191,7 +191,7 @@ public:
     }
 
     bool EncodeFrame(void* nv12Data, void** output, size_t* outputSize) {
-        if (!currentEncoder && currentType != EncoderType::Software) {
+        if (!currentEncoder) {
             return false;
         }
 

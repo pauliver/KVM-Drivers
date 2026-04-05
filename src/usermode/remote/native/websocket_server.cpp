@@ -1,3 +1,9 @@
+// DEPRECATED — This file is NOT compiled or linked into any build target.
+// The active implementation is websocket_server_async.cpp (AsyncWebSocketServer),
+// which is the server that service.cpp creates via WsAsync_Create().
+// This file is kept for historical reference only and should be deleted
+// once the async implementation has been in production long enough.
+
 // WebSocket Server - Native protocol handler with JSON-RPC and driver integration
 #include <winsock2.h>
 #include <ws2tcpip.h>

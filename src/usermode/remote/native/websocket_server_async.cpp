@@ -56,7 +56,22 @@ struct WSClient {
     // Statistics
     ULONGLONG messagesReceived;
     ULONGLONG messagesSent;
+
+    // Controller slot (-1 = no controller claimed)
+    int controllerSlot;
 };
+
+// Reconnect hold: keeps a slot reserved for a disconnecting client's IP
+// for CONTROLLER_HOLD_MS milliseconds so an unstable connection gets the
+// same controller on reconnect.
+struct ControllerHold {
+    char     ip[INET_ADDRSTRLEN];
+    int      slot;
+    ULONGLONG releasedAt;   // GetTickCount64() when the hold started
+    bool     active;
+};
+
+constexpr ULONGLONG CONTROLLER_HOLD_MS = 30000;  // 30-second reconnect grace
 
 // Message for async injection
 struct InjectionMessage {
@@ -100,7 +115,8 @@ public:
             clients_[i].connected = false;
             clients_[i].handshaked = false;
         }
-        for (int i = 0; i < WS_MAX_CLIENTS; i++) streamingClients_[i] = false;
+        for (int i = 0; i < WS_MAX_CLIENTS; i++) { streamingClients_[i] = false; clients_[i].controllerSlot = -1; }
+        for (int i = 0; i < 4; i++) { controllerSlotOwner_[i] = -1; controllerHolds_[i] = {}; }
         
         LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket", 
             "Server initialized on port %d", port);
@@ -406,6 +422,29 @@ private:
         clients_[slot].inputCountLastSecond = 0;
         clients_[slot].messagesReceived = 0;
         clients_[slot].messagesSent = 0;
+        clients_[slot].controllerSlot = -1;
+
+        // Reconnect: if this IP has an active hold on a controller slot, restore it
+        ULONGLONG now = GetTickCount64();
+        for (int cs = 0; cs < 4; cs++) {
+            ControllerHold& hold = controllerHolds_[cs];
+            if (hold.active && strcmp(hold.ip, clientIP) == 0) {
+                if (now - hold.releasedAt < CONTROLLER_HOLD_MS) {
+                    // Same IP reconnected within grace period: restore slot
+                    clients_[slot].controllerSlot  = cs;
+                    controllerSlotOwner_[cs]        = slot;
+                    hold.active                     = false;
+                    LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
+                        "Restored controller slot %d to reconnecting client %s",
+                        cs, clientIP);
+                } else {
+                    // Grace period expired: fully release the slot
+                    if (driverInterface_) driverInterface_->ReleaseControllerSlot(cs);
+                    hold.active = false;
+                }
+                break;
+            }
+        }
 
         LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
             "Client %d connected from %s", slot, clientIP);
@@ -769,15 +808,66 @@ private:
             }
             else if (msg.method == "input.controller.report") {
                 if (driverInterface_ && msg.intParams.size() >= 7) {
-                    XUSB_REPORT report = {};
-                    report.wButtons       = (USHORT)msg.intParams[0];
-                    report.bLeftTrigger   = (BYTE)msg.intParams[1];
-                    report.bRightTrigger  = (BYTE)msg.intParams[2];
-                    report.sThumbLX       = (SHORT)msg.intParams[3];
-                    report.sThumbLY       = (SHORT)msg.intParams[4];
-                    report.sThumbRX       = (SHORT)msg.intParams[5];
-                    report.sThumbRY       = (SHORT)msg.intParams[6];
-                    success = driverInterface_->InjectControllerReport(report);
+                    // Find the client index that owns this response socket
+                    int clientIdx = -1;
+                    for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+                        if (clients_[i].socket == msg.responseSocket && clients_[i].connected) {
+                            clientIdx = i;
+                            break;
+                        }
+                    }
+
+                    if (clientIdx >= 0) {
+                        // Auto-claim a slot on first controller report from this client
+                        if (clients_[clientIdx].controllerSlot < 0) {
+                            // Check for expired holds and expire them first
+                            ULONGLONG now = GetTickCount64();
+                            for (int cs = 0; cs < 4; cs++) {
+                                ControllerHold& h = controllerHolds_[cs];
+                                if (h.active && now - h.releasedAt >= CONTROLLER_HOLD_MS) {
+                                    driverInterface_->ReleaseControllerSlot(cs);
+                                    h.active = false;
+                                }
+                            }
+
+                            int newSlot = driverInterface_->ClaimControllerSlot();
+                            if (newSlot >= 0) {
+                                clients_[clientIdx].controllerSlot = newSlot;
+                                controllerSlotOwner_[newSlot] = clientIdx;
+                                // Tell the client which player number they are
+                                std::string notif =
+                                    "{\"jsonrpc\":\"2.0\",\"method\":\"input.controller.assigned\","
+                                    "\"params\":{\"slot\":" + std::to_string(newSlot) + "}}";
+                                std::lock_guard<std::mutex> lock(clientsMutex_);
+                                clients_[clientIdx].sendBuffer += EncodeWebSocketFrame(notif);
+                                LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
+                                    "Client %d claimed controller slot %d (player %d)",
+                                    clientIdx, newSlot, newSlot + 1);
+                            } else {
+                                // All 4 slots are busy — tell the client
+                                std::string err =
+                                    "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32001,"
+                                    "\"message\":\"All controller slots are occupied (max 4 players)\"},"
+                                    "\"id\":" + std::to_string(msg.requestId) + "}";
+                                std::lock_guard<std::mutex> lock(clientsMutex_);
+                                clients_[clientIdx].sendBuffer += EncodeWebSocketFrame(err);
+                                success = false;
+                                goto controller_done;
+                            }
+                        }
+
+                        int slot = clients_[clientIdx].controllerSlot;
+                        XUSB_REPORT report = {};
+                        report.wButtons      = (USHORT)msg.intParams[0];
+                        report.bLeftTrigger  = (BYTE)msg.intParams[1];
+                        report.bRightTrigger = (BYTE)msg.intParams[2];
+                        report.sThumbLX      = (SHORT)msg.intParams[3];
+                        report.sThumbLY      = (SHORT)msg.intParams[4];
+                        report.sThumbRX      = (SHORT)msg.intParams[5];
+                        report.sThumbRY      = (SHORT)msg.intParams[6];
+                        success = driverInterface_->InjectControllerReportSlot(slot, report);
+                    }
+                    controller_done:;
                 }
             }
             else if (msg.method == "system.ping") {
@@ -820,6 +910,11 @@ private:
 
     // Adaptive quality controller - shared across all clients
     AdaptiveQuality adaptiveQuality_;
+
+    // Controller slot management
+    // controllerSlotOwner_[s] = WS client index that currently holds slot s, or -1
+    int controllerSlotOwner_[4] = {-1, -1, -1, -1};
+    ControllerHold controllerHolds_[4] = {};  // per-slot reconnect hold
 
     // Screen streaming
     ID3D11Device*            streamD3D_     = nullptr;
@@ -991,6 +1086,35 @@ void AsyncWebSocketServer::SendPong(int clientIndex, const std::vector<BYTE>& pa
 
 void AsyncWebSocketServer::DisconnectClient(int clientIndex) {
     if (clients_[clientIndex].socket == INVALID_SOCKET) return;
+
+    // Release controller slot (with hold for reconnect stability)
+    int cslot = clients_[clientIndex].controllerSlot;
+    if (cslot >= 0) {
+        char clientIP[INET_ADDRSTRLEN] = "unknown";
+        inet_ntop(AF_INET, &clients_[clientIndex].address.sin_addr, clientIP, INET_ADDRSTRLEN);
+
+        // Zero out all buttons so the game sees a clean release
+        XUSB_REPORT zero = {};
+        zero.bReportId = (BYTE)cslot;
+        zero.bSize     = sizeof(XUSB_REPORT);
+        if (driverInterface_) driverInterface_->InjectControllerReportSlot(cslot, zero);
+
+        // Hold the slot for CONTROLLER_HOLD_MS so a reconnecting client
+        // gets the same player number.
+        controllerSlotOwner_[cslot] = -1;
+        ControllerHold& hold = controllerHolds_[cslot];
+        strncpy_s(hold.ip, clientIP, INET_ADDRSTRLEN - 1);
+        hold.slot       = cslot;
+        hold.releasedAt = GetTickCount64();
+        hold.active     = true;
+
+        clients_[clientIndex].controllerSlot = -1;
+        // Do NOT call driverInterface_->ReleaseControllerSlot() yet—
+        // the VHF device stays active during the hold window.
+        LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
+            "Controller slot %d held for %s (%.0f s grace)",
+            cslot, clientIP, CONTROLLER_HOLD_MS / 1000.0);
+    }
 
     // Clear streaming flag before closing
     if (streamingClients_[clientIndex]) {

@@ -30,20 +30,26 @@ public:
     bool InjectMouseScroll(int vertical, int horizontal = 0);
 
     // Controller
-    bool InjectControllerReport(const XUSB_REPORT& report);
+    bool InjectControllerReport(const XUSB_REPORT& report);  // legacy: injects to slot 0
+    bool InjectControllerReportSlot(int slot, const XUSB_REPORT& report);
+    int  ClaimControllerSlot();                               // returns 0-3 or -1 if full
+    void ReleaseControllerSlot(int slot);
+    bool IsControllerSlotClaimed(int slot) const;
     bool SetControllerRumble(UCHAR leftMotor, UCHAR rightMotor);
 
     // Display
     bool CaptureFrame(void** frameData, size_t* size);
     bool GetDisplayInfo(UINT* width, UINT* height, UINT* refreshRate);
+    bool SetDisplayResolution(int width, int height);
 
 private:
     HANDLE keyboardHandle;
     HANDLE mouseHandle;
-    HANDLE controllerHandle;
+    HANDLE controllerHandle;         // single-slot legacy handle (slot 0)
     HANDLE displayHandle;
     std::atomic<bool> useDriverInjection;
     mutable std::mutex handleMutex_;  // Protects all HANDLE members
+    bool   controllerSlotClaimed_[4] = {};  // which slots are currently in use
 };
 
 // HID to Virtual Key conversion helper

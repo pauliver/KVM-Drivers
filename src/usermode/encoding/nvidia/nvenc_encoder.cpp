@@ -1,19 +1,20 @@
 // NVIDIA NVENC encoder implementation
 #include <windows.h>
+#include <d3d11.h>
 #include <nvEncodeAPI.h>
-#include <cuda.h>
 #include <iostream>
 #include <vector>
 #include <cstdint>
 
 #pragma comment(lib, "nvencodeapi.lib")
-#pragma comment(lib, "cuda.lib")
+#pragma comment(lib, "d3d11.lib")
 
 typedef NVENCSTATUS (NVENCAPI *NvEncodeAPICreateInstanceFunc)(NV_ENCODE_API_FUNCTION_LIST *functionList);
 
 class NvencEncoder {
 public:
-    NvencEncoder() : encoder(nullptr), cudaContext(nullptr), initialized(false) {
+    NvencEncoder() : encoder(nullptr), cudaContext(nullptr), initialized(false)
+                     , bitstreamBuffer(nullptr) {
         memset(&nvencFuncs, 0, sizeof(nvencFuncs));
     }
 
@@ -36,14 +37,28 @@ public:
             return false;
         }
 
-        NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS params = {};
-        params.version = NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER;
-        params.apiVersion = NVENCAPI_VERSION;
-        params.deviceType = NV_ENC_DEVICE_TYPE_CUDA;
-        params.device = cudaContext;
+        // NVENC requires a valid device pointer. We use D3D11 here because
+        // creating a full CUDA context requires the CUDA runtime library.
+        // Create a minimal D3D11 device just for NVENC session open.
+        ID3D11Device* d3dDev = nullptr;
+        D3D_FEATURE_LEVEL fl;
+        if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
+                D3D11_SDK_VERSION, &d3dDev, &fl, nullptr))) {
+            std::cerr << "[NVENC] D3D11 device creation failed" << std::endl;
+            return false;
+        }
 
-        if (nvencFuncs.nvEncOpenEncodeSessionEx(&params, &encoder) != NV_ENC_SUCCESS) {
-            std::cerr << "nvEncOpenEncodeSessionEx failed" << std::endl;
+        NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS params = {};
+        params.version    = NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER;
+        params.apiVersion = NVENCAPI_VERSION;
+        params.deviceType = NV_ENC_DEVICE_TYPE_DIRECTX;
+        params.device     = d3dDev;
+
+        NVENCSTATUS openStatus = nvencFuncs.nvEncOpenEncodeSessionEx(&params, &encoder);
+        d3dDev->Release();  // NVENC adds its own reference; release ours
+        if (openStatus != NV_ENC_SUCCESS) {
+            std::cerr << "nvEncOpenEncodeSessionEx failed: " << openStatus << std::endl;
             return false;
         }
 
@@ -123,17 +138,23 @@ public:
         }
 
         // Encode frame
+        // Only force IDR on the very first frame; subsequent frames are
+        // P-frames, which dramatically reduces bandwidth.
+        static bool firstFrame = true;
         NV_ENC_PIC_PARAMS picParams = {};
-        picParams.version = NV_ENC_PIC_PARAMS_VER;
-        picParams.inputBuffer = mapResource.mappedResource;
-        picParams.bufferFmt = NV_ENC_BUFFER_FORMAT_NV12;
+        picParams.version         = NV_ENC_PIC_PARAMS_VER;
+        picParams.inputBuffer     = mapResource.mappedResource;
+        picParams.bufferFmt       = NV_ENC_BUFFER_FORMAT_NV12;
         picParams.outputBitstream = bitstreamBuffer;
-        picParams.inputWidth = width;
-        picParams.inputHeight = height;
-        picParams.inputPitch = width;
-        picParams.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR;
-        picParams.pictureType = NV_ENC_PIC_TYPE_IDR;
-        picParams.codecPicParams.h264PicParams.sliceMode = 0;
+        picParams.inputWidth      = width;
+        picParams.inputHeight     = height;
+        picParams.inputPitch      = width;
+        if (firstFrame) {
+            picParams.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR;
+            picParams.pictureType    = NV_ENC_PIC_TYPE_IDR;
+            firstFrame = false;
+        }
+        picParams.codecPicParams.h264PicParams.sliceMode     = 0;
         picParams.codecPicParams.h264PicParams.sliceModeData = 0;
 
         NVENCSTATUS status = nvencFuncs.nvEncEncodePicture(encoder, &picParams);

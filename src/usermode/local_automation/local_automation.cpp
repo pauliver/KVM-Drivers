@@ -285,6 +285,51 @@ private:
     int testFailed_;
     const YAML::Node* currentTest_;
     
+    bool ExecuteAssertions(const YAML::Node& assertions) {
+        for (const auto& node : assertions) {
+            std::string type = node["type"].as<std::string>("");
+            std::string description = node["description"].as<std::string>(type);
+            bool passed = false;
+
+            if (type == "compare_image") {
+                std::string ref    = node["reference"].as<std::string>("");
+                std::string actual = node["actual"].as<std::string>("");
+                double      tol    = node["tolerance"].as<double>(0.05);
+                passed = CompareImages(ref, actual, tol);
+
+            } else if (type == "display_not_black") {
+                // Capture and check > 1% non-black
+                std::string cap = node["capture"].as<std::string>("assert_capture.png");
+                passed = TakeScreenshot(cap) && TestDisplay();
+
+            } else if (type == "driver_available") {
+                passed = driverInterface_->IsDriverInjectionAvailable();
+
+            } else if (type == "pass") {
+                passed = true;
+
+            } else if (type == "fail") {
+                passed = false;
+
+            } else {
+                std::cerr << "  Unknown assertion type: " << type << "\n";
+                passed = false;
+            }
+
+            if (passed) {
+                std::cout << "  [PASS] " << description << "\n";
+                testPassed_++;
+            } else {
+                std::cerr << "  [FAIL] " << description << "\n";
+                testFailed_++;
+                if (!node["continue_on_fail"].as<bool>(false)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     bool ExecuteActions(const YAML::Node& actions) {
         for (const auto& action : actions) {
             if (!ExecuteSingleAction(action)) {

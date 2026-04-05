@@ -10,7 +10,9 @@
 #include <chrono>
 #include <iostream>
 
-#include "../encoding/encoder_manager.cpp"
+// EncoderManager is compiled as a separate translation unit.
+// Pull in only the declarations needed for the pointer member.
+class EncoderManager;
 #include "../core/driver_interface.h"
 
 #pragma comment(lib, "d3d11.lib")
@@ -338,7 +340,7 @@ private:
         if (!dupl) return false;
 
         IDXGIResource* desktopResource = nullptr;
-        DXGI_OUTDUPL_FRAME_FRAME_INFO frameInfo;
+        DXGI_OUTDUPL_FRAME_INFO frameInfo = {};  // fixed: was DXGI_OUTDUPL_FRAME_FRAME_INFO (double FRAME)
 
         HRESULT hr = dupl->AcquireNextFrame(100, &frameInfo, &desktopResource);
         if (FAILED(hr)) {

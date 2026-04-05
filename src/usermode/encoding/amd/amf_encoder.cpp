@@ -13,7 +13,9 @@ class AmfEncoder {
 public:
     AmfEncoder() : factory(nullptr), context(nullptr), encoder(nullptr), initialized(false) {}
 
-    bool Initialize(int width, int height, int fps) {
+    bool Initialize(int w, int h, int fps) {
+        width  = w;
+        height = h;
         // Load AMF library
         HMODULE hModule = LoadLibraryA("amfrt64.dll");
         if (!hModule) {

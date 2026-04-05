@@ -327,29 +327,24 @@ public:
 
     void Stop() {
         running_ = false;
-        
+
         // Close listen socket to unblock accept
         if (listenSocket_ != INVALID_SOCKET) {
             closesocket(listenSocket_);
             listenSocket_ = INVALID_SOCKET;
         }
-        
+
         // Wait for accept thread
         if (acceptThread_.joinable()) {
             acceptThread_.join();
         }
-        
-        // Wait for all client threads to finish
-        {
-            std::lock_guard<std::mutex> lock(threadsMutex_);
-            for (auto& t : clientThreads_) {
-                if (t.joinable()) {
-                    t.join();
-                }
-            }
-            clientThreads_.clear();
-        }
-        
+
+        // Client threads are detached (see AcceptLoop); wait for them to drain
+        // by polling connectionCount_ with a timeout.
+        constexpr int DRAIN_TIMEOUT_MS = 5000;
+        for (int waited = 0; connectionCount_ > 0 && waited < DRAIN_TIMEOUT_MS; waited += 50)
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
         StopCapture();
         WSACleanup();
     }
@@ -360,8 +355,6 @@ private:
     SOCKET listenSocket_;
     std::thread acceptThread_;
 
-    std::vector<std::thread> clientThreads_;
-    std::mutex threadsMutex_;
     std::atomic<int> connectionCount_{0};
     static constexpr int MAX_CONNECTIONS = 10;
     static constexpr int SOCKET_TIMEOUT_MS = 30000;  // 30 seconds
@@ -469,6 +462,10 @@ private:
             if (hr == DXGI_ERROR_ACCESS_LOST) {
                 deskDupl_->Release(); deskDupl_ = nullptr;
                 if (stagingTex) { stagingTex->Release(); stagingTex = nullptr; }
+                // Also release D3D device/context so InitCapture() recreates them
+                // cleanly without leaking the old COM references.
+                if (d3dContext_) { d3dContext_->Release(); d3dContext_ = nullptr; }
+                if (d3dDevice_)  { d3dDevice_->Release();  d3dDevice_  = nullptr; }
                 continue;
             }
 
@@ -593,10 +590,12 @@ private:
             setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
             
             connectionCount_++;
-            
-            // Track threads instead of detaching
-            std::lock_guard<std::mutex> lock(threadsMutex_);
-            clientThreads_.emplace_back(&VncServerImpl::HandleClient, this, clientSocket);
+
+            // Detach client threads so the vector never accumulates dead entries.
+            // connectionCount_ is decremented when the thread finishes, so
+            // Stop() can drain them without holding any references.
+            std::thread t(&VncServerImpl::HandleClient, this, clientSocket);
+            t.detach();
         }
     }
 
