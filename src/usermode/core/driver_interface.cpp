@@ -1,7 +1,7 @@
 // driver_interface.cpp - Communication with kernel drivers and SendInput fallback
 #include "driver_interface.h"
-#include <iostream>
 #include <Windows.h>
+#include "../../common/logging/unified_logger.h"
 
 // Fallback to SendInput when drivers not loaded
 bool UseSendInputFallback = true;
@@ -60,30 +60,31 @@ bool DriverInterface::Initialize() {
         NULL
     );
 
-    // Determine if we can use driver injection
-    useDriverInjection = (keyboardHandle != INVALID_HANDLE_VALUE && mouseHandle != INVALID_HANDLE_VALUE);
+    useDriverInjection = (keyboardHandle != INVALID_HANDLE_VALUE &&
+                           mouseHandle    != INVALID_HANDLE_VALUE);
 
-    // Log which drivers are available
-    if (keyboardHandle != INVALID_HANDLE_VALUE) {
-        std::wcout << L"[DriverInterface] Keyboard driver connected" << std::endl;
-    } else if (UseSendInputFallback) {
-        std::wcout << L"[DriverInterface] Keyboard driver not available, will use SendInput fallback" << std::endl;
-    }
-    
-    if (mouseHandle != INVALID_HANDLE_VALUE) {
-        std::wcout << L"[DriverInterface] Mouse driver connected" << std::endl;
-    } else if (UseSendInputFallback) {
-        std::wcout << L"[DriverInterface] Mouse driver not available, will use SendInput fallback" << std::endl;
-    }
-    
-    if (controllerHandle != INVALID_HANDLE_VALUE) {
-        std::wcout << L"[DriverInterface] Controller driver connected" << std::endl;
-    }
-    
-    if (displayHandle != INVALID_HANDLE_VALUE) {
-        std::wcout << L"[DriverInterface] Display driver connected" << std::endl;
-    }
+    // Log driver availability — this tells you at a glance what hardware path is active
+    KVM_LOG_INFO("DriverInterface", "Driver open results: kb=%s  mouse=%s  ctrl=%s  display=%s",
+        keyboardHandle    != INVALID_HANDLE_VALUE ? "OK" : "MISSING",
+        mouseHandle       != INVALID_HANDLE_VALUE ? "OK" : "MISSING",
+        controllerHandle  != INVALID_HANDLE_VALUE ? "OK" : "MISSING",
+        displayHandle     != INVALID_HANDLE_VALUE ? "OK" : "MISSING");
 
+    if (keyboardHandle == INVALID_HANDLE_VALUE)
+        KVM_LOG_WARN("DriverInterface",
+            "vhidkb not found (err=%lu) — keyboard via SendInput fallback", GetLastError());
+    if (mouseHandle == INVALID_HANDLE_VALUE)
+        KVM_LOG_WARN("DriverInterface",
+            "vhidmouse not found (err=%lu) — mouse via SendInput fallback", GetLastError());
+    if (controllerHandle == INVALID_HANDLE_VALUE)
+        KVM_LOG_WARN("DriverInterface",
+            "vxinput not found (err=%lu) — gamepad input unavailable", GetLastError());
+    if (displayHandle == INVALID_HANDLE_VALUE)
+        KVM_LOG_WARN("DriverInterface",
+            "vdisplay not found (err=%lu) — screen capture via DXGI desktop dup", GetLastError());
+
+    KVM_LOG_INFO("DriverInterface",
+        "Injection mode: %s", useDriverInjection ? "DRIVER" : "SendInput fallback");
     return true;
 }
 

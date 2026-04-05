@@ -16,7 +16,7 @@
 #include <schannel.h>
 #include <shlobj.h>
 #include <ole2.h>
-#include <iostream>
+#include "logging/unified_logger.h"
 #include <string>
 #include <vector>
 #include <sstream>
@@ -69,11 +69,11 @@ public:
             EnableCallback, this,
             &providerHandle_);
         if (status != ERROR_SUCCESS) {
-            std::cerr << "[ETW] EventRegister failed: " << status << std::endl;
+            KVM_LOG_ERROR("ETWAudit", "EventRegister failed: %lu", status);
             return false;
         }
         enabled_ = true;
-        std::cout << "[ETW] Audit provider registered" << std::endl;
+        KVM_LOG_INFO("ETWAudit", "Audit ETW provider registered");
         return true;
     }
 
@@ -147,8 +147,7 @@ private:
 
         EventWrite(providerHandle_, &desc, 1, &dataDesc);
 
-        // Also output to stderr for immediate visibility
-        std::cerr << "[AUDIT] " << payload << std::endl;
+        KVM_LOG_INFO("ETWAudit", "AUDIT: %s", payload.c_str());
     }
 };
 
@@ -168,7 +167,7 @@ public:
                        normalized.begin(), ::toupper);
         std::lock_guard<std::mutex> lk(mutex_);
         pinnedThumbprints_.push_back(normalized);
-        std::cout << "[CertPin] Pinned: " << normalized << std::endl;
+        KVM_LOG_INFO("CertPin", "Pinned cert thumbprint: %s", normalized.c_str());
     }
 
     bool IsEmpty() const {
@@ -580,8 +579,8 @@ public:
             // Queue approval request and wait for tray decision
             std::string reqId = approvalStore.EnqueueRequest(
                 clientIP, protocol, isAuthenticated);
-            std::cout << "[Auth] Waiting for approval of " << clientIP
-                      << " (id=" << reqId << ")" << std::endl;
+            KVM_LOG_INFO("AuthGate", "Waiting for tray approval: client=%s id=%s",
+                clientIP.c_str(), reqId.c_str());
 
             std::string result = approvalStore.WaitForResult(reqId);
 
@@ -650,8 +649,8 @@ public:
     bool ValidateConnection(const std::string& clientIP, const std::string& protocol) {
         if (!ipAllowlist.IsAllowed(clientIP)) {
             auditLog.LogIpBlocked(clientIP);
-            std::cerr << "[Security] Blocked: " << clientIP
-                      << " not in allowlist" << std::endl;
+            KVM_LOG_WARN("Security", "Connection blocked (IP not in allowlist): %s",
+                clientIP.c_str());
             return false;
         }
         auditLog.LogConnect(clientIP, protocol);
@@ -671,8 +670,8 @@ public:
         std::string thumbprint;
         if (!certPinner.Validate(cert, thumbprint)) {
             auditLog.LogCertRejected(clientIP, thumbprint);
-            std::cerr << "[Security] Cert rejected: " << thumbprint
-                      << " from " << clientIP << std::endl;
+            KVM_LOG_WARN("Security", "Connection blocked (cert not pinned): thumbprint=%s client=%s",
+                thumbprint.c_str(), clientIP.c_str());
             return false;
         }
 

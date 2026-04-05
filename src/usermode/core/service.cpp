@@ -9,8 +9,59 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <shlobj.h>
+#include <dbghelp.h>
 #include "../remote/native/websocket_server_async.h"
 #include "../remote/vnc/vnc_server.h"
+#include "../../common/logging/unified_logger.h"
+
+#pragma comment(lib, "dbghelp.lib")
+
+// ── Log file path (%%PROGRAMDATA%%\KVM-Drivers\KVMService.log) ────────────────
+void InitServiceLogger()
+{
+    wchar_t appDataW[MAX_PATH] = {};
+    char    appDataA[MAX_PATH] = {};
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, appDataW))) {
+        // Ensure directory exists
+        std::wstring dir = std::wstring(appDataW) + L"\\KVM-Drivers";
+        CreateDirectoryW(dir.c_str(), NULL);
+        // Build narrow path for fopen
+        WideCharToMultiByte(CP_UTF8, 0, appDataW, -1, appDataA, MAX_PATH, NULL, NULL);
+    }
+    char logPath[MAX_PATH];
+    snprintf(logPath, sizeof(logPath), "%s\\KVM-Drivers\\KVMService.log", appDataA);
+    UserLogger_Initialize(logPath, LOG_LEVEL_DEBUG, LOG_CATEGORY_ALL);
+    KVM_LOG_INFO("Service", "Logger initialized. Log file: %s", logPath);
+}
+
+// ── SEH crash handler — flush log before the process dies ────────────────────
+LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep)
+{
+    KVM_LOG_FATAL("Service",
+        "UNHANDLED EXCEPTION: code=0x%08lX addr=%p — flushing log and exiting",
+        ep->ExceptionRecord->ExceptionCode,
+        ep->ExceptionRecord->ExceptionAddress);
+
+    // Write a minidump alongside the log for post-mortem analysis
+    wchar_t appDataW[MAX_PATH] = {};
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, appDataW))) {
+        std::wstring dumpPath = std::wstring(appDataW) + L"\\KVM-Drivers\\KVMService_crash.dmp";
+        HANDLE hFile = CreateFileW(dumpPath.c_str(), GENERIC_WRITE,
+            0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            MINIDUMP_EXCEPTION_INFORMATION mei;
+            mei.ThreadId          = GetCurrentThreadId();
+            mei.ExceptionPointers = ep;
+            mei.ClientPointers    = FALSE;
+            MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
+                hFile, MiniDumpWithDataSegs, &mei, NULL, NULL);
+            CloseHandle(hFile);
+        }
+    }
+
+    UserLogger_FlushSync();   // drain ring buffer before exit
+    return EXCEPTION_EXECUTE_HANDLER;
+}
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -135,7 +186,6 @@ static void HttpLoop()
 
 static bool StartHttpServer(int port)
 {
-    // Load index.html
     std::string path = ResolveWebClientPath();
     if (!path.empty()) {
         std::ifstream f(path, std::ios::binary);
@@ -143,13 +193,17 @@ static bool StartHttpServer(int port)
             std::istreambuf_iterator<char>(f),
             std::istreambuf_iterator<char>());
         g_indexHtmlPath = path;
-        std::cout << "[HTTP] Serving web client from: " << path << std::endl;
+        KVM_LOG_INFO("HTTP", "Serving web client from: %s (%zu bytes)",
+            path.c_str(), g_indexHtml.size());
     } else {
-        std::cerr << "[HTTP] index.html not found — HTTP server will return 404" << std::endl;
+        KVM_LOG_WARN("HTTP", "index.html not found beside KVMService.exe — HTTP will return 404");
     }
 
     g_httpListenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (g_httpListenSocket == INVALID_SOCKET) return false;
+    if (g_httpListenSocket == INVALID_SOCKET) {
+        KVM_LOG_ERROR("HTTP", "socket() failed: %d", WSAGetLastError());
+        return false;
+    }
 
     int opt = 1;
     setsockopt(g_httpListenSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
@@ -160,12 +214,13 @@ static bool StartHttpServer(int port)
     addr.sin_port        = htons((u_short)port);
 
     if (bind(g_httpListenSocket, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        std::cerr << "[HTTP] bind port " << port << " failed: " << WSAGetLastError() << std::endl;
+        KVM_LOG_ERROR("HTTP", "bind port %d failed: %d", port, WSAGetLastError());
         closesocket(g_httpListenSocket);
         g_httpListenSocket = INVALID_SOCKET;
         return false;
     }
     if (listen(g_httpListenSocket, 10) == SOCKET_ERROR) {
+        KVM_LOG_ERROR("HTTP", "listen() failed: %d", WSAGetLastError());
         closesocket(g_httpListenSocket);
         g_httpListenSocket = INVALID_SOCKET;
         return false;
@@ -176,8 +231,8 @@ static bool StartHttpServer(int port)
     g_httpThread  = std::thread(HttpLoop);
 
     std::string ip = GetLocalIPv4();
-    std::cout << "[HTTP] Web client available at http://" << ip << ":" << port << "/" << std::endl;
-    std::cout << "[HTTP] (also http://localhost:" << port << "/ on this machine)" << std::endl;
+    KVM_LOG_INFO("HTTP", "Web client listening on http://%s:%d/ (also http://localhost:%d/)",
+        ip.c_str(), port, port);
     return true;
 }
 
@@ -200,8 +255,15 @@ VOID WINAPI ServiceMain(DWORD argc, LPWSTR* argv) {
     UNREFERENCED_PARAMETER(argc);
     UNREFERENCED_PARAMETER(argv);
 
+    // ── Logger must be first — everything else logs to it ────────────────────
+    InitServiceLogger();
+    SetUnhandledExceptionFilter(CrashHandler);
+
+    KVM_LOG_INFO("Service", "ServiceMain entered — registering SCM control handler");
+
     g_StatusHandle = RegisterServiceCtrlHandler(L"KVMService", ServiceCtrlHandler);
     if (g_StatusHandle == NULL) {
+        KVM_LOG_FATAL("Service", "RegisterServiceCtrlHandler failed: %lu", GetLastError());
         return;
     }
 
@@ -219,43 +281,48 @@ VOID WINAPI ServiceMain(DWORD argc, LPWSTR* argv) {
     // Create stop event
     g_ServiceStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
     if (g_ServiceStopEvent == NULL) {
-        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
-        g_ServiceStatus.dwWin32ExitCode = GetLastError();
+        DWORD err = GetLastError();
+        KVM_LOG_FATAL("Service", "CreateEvent(stop) failed: %lu", err);
+        g_ServiceStatus.dwCurrentState  = SERVICE_STOPPED;
+        g_ServiceStatus.dwWin32ExitCode = err;
         SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+        UserLogger_FlushSync();
         return;
     }
 
-    // Initialize driver communication
+    KVM_LOG_INFO("Service", "Initializing driver interface");
     if (!InitializeDriverInterface()) {
-        CloseHandle(g_ServiceStopEvent);  // prevent handle leak on early exit
+        KVM_LOG_FATAL("Service", "InitializeDriverInterface() failed — aborting start");
+        CloseHandle(g_ServiceStopEvent);
         g_ServiceStopEvent = INVALID_HANDLE_VALUE;
-        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+        g_ServiceStatus.dwCurrentState  = SERVICE_STOPPED;
         g_ServiceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
         SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+        UserLogger_FlushSync();
         return;
     }
 
-    // Start protocol servers
+    KVM_LOG_INFO("Service", "Starting protocol servers");
     if (!StartProtocolServers()) {
-        CloseHandle(g_ServiceStopEvent);  // prevent handle leak on early exit
+        KVM_LOG_FATAL("Service", "StartProtocolServers() failed — aborting start");
+        CloseHandle(g_ServiceStopEvent);
         g_ServiceStopEvent = INVALID_HANDLE_VALUE;
-        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+        g_ServiceStatus.dwCurrentState  = SERVICE_STOPPED;
         g_ServiceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
         SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+        UserLogger_FlushSync();
         return;
     }
 
-    // Signal we're running
     g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
     SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+    KVM_LOG_INFO("Service", "KVMService is RUNNING");
 
-    // Service loop
     while (WaitForSingleObject(g_ServiceStopEvent, 100) != WAIT_OBJECT_0) {
-        // Process driver events, protocol messages, etc.
         ProcessServiceTasks();
     }
 
-    // Cleanup
+    KVM_LOG_INFO("Service", "Stop event signalled — shutting down");
     StopProtocolServers();
     CleanupDriverInterface();
     CloseHandle(g_ServiceStopEvent);
@@ -263,18 +330,27 @@ VOID WINAPI ServiceMain(DWORD argc, LPWSTR* argv) {
 
     g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
     SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+    KVM_LOG_INFO("Service", "KVMService stopped cleanly");
+    UserLogger_FlushSync();
+    UserLogger_Shutdown();
 }
 
 VOID WINAPI ServiceCtrlHandler(DWORD CtrlCode) {
     switch (CtrlCode) {
     case SERVICE_CONTROL_STOP:
-    case SERVICE_CONTROL_SHUTDOWN:
+        KVM_LOG_INFO("Service", "SCM STOP control received");
         g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
         SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
         SetEvent(g_ServiceStopEvent);
         break;
-
+    case SERVICE_CONTROL_SHUTDOWN:
+        KVM_LOG_INFO("Service", "SCM SHUTDOWN control received");
+        g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
+        SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+        SetEvent(g_ServiceStopEvent);
+        break;
     default:
+        KVM_LOG_DEBUG("Service", "SCM control code %lu ignored", CtrlCode);
         break;
     }
 }
@@ -371,54 +447,64 @@ static int ReadSettingInt(const char* key, int defaultVal)
 }
 
 BOOL StartProtocolServers() {
-    // Read WsMaxClients from tray settings (default 10 if not found)
-    int wsMaxClients = ReadSettingInt("WsMaxClients", 10);
-    std::cout << "[Service] WS max clients: " << wsMaxClients << std::endl;
+    int wsMaxClients  = ReadSettingInt("WsMaxClients",  10);
+    int vncMaxClients = ReadSettingInt("VncMaxClients", 10);
+    KVM_LOG_INFO("Service", "Settings: WsMaxClients=%d  VncMaxClients=%d",
+        wsMaxClients, vncMaxClients);
 
     // --- Async WebSocket server (JSON-RPC input injection, port 8443) ---
+    KVM_LOG_INFO("Service", "Starting WebSocket server on port 8443 (max %d clients)", wsMaxClients);
     g_wsServer = WsAsync_Create(8443, wsMaxClients);
-    if (!g_wsServer || !WsAsync_Start(g_wsServer)) {
-        std::wcerr << L"[Service] Failed to start WebSocket server on port 8443" << std::endl;
-        if (g_wsServer) { WsAsync_Destroy(g_wsServer); g_wsServer = nullptr; }
+    if (!g_wsServer) {
+        KVM_LOG_ERROR("Service", "WsAsync_Create() returned null");
         return FALSE;
     }
-    std::wcout << L"[Service] WebSocket server started on port 8443" << std::endl;
+    if (!WsAsync_Start(g_wsServer)) {
+        KVM_LOG_ERROR("Service", "WsAsync_Start() failed — port 8443 may already be in use");
+        WsAsync_Destroy(g_wsServer);
+        g_wsServer = nullptr;
+        return FALSE;
+    }
+    KVM_LOG_INFO("Service", "WebSocket server STARTED on port 8443");
 
     // --- VNC server (RFB 3.8, port 5900) ---
-    int vncMaxClients = ReadSettingInt("VncMaxClients", 10);
-    std::cout << "[Service] VNC max clients: " << vncMaxClients << std::endl;
+    KVM_LOG_INFO("Service", "Starting VNC server on port 5900 (max %d clients)", vncMaxClients);
     g_vncServer = new KVMDrivers::Remote::VNCServer(vncMaxClients);
     if (!g_vncServer->Start()) {
-        std::wcerr << L"[Service] Failed to start VNC server on port 5900 (non-fatal)" << std::endl;
+        KVM_LOG_WARN("Service",
+            "VNC server failed to start on port 5900 (non-fatal — WS still active)");
         delete g_vncServer;
         g_vncServer = nullptr;
-        // Non-fatal: service still operates via WebSocket
     } else {
-        std::wcout << L"[Service] VNC server started on port 5900" << std::endl;
+        KVM_LOG_INFO("Service", "VNC server STARTED on port 5900");
     }
 
-    // --- HTTP server (serves index.html / web client, port 8080) ---
+    // --- HTTP server (serves web client index.html, port 8080) ---
+    KVM_LOG_INFO("Service", "Starting HTTP web client server on port 8080");
     if (!StartHttpServer(8080)) {
-        std::wcerr << L"[Service] Failed to start HTTP web client server on port 8080 (non-fatal)" << std::endl;
-        // Non-fatal: users can open index.html directly
+        KVM_LOG_WARN("Service",
+            "HTTP server failed to start on port 8080 (non-fatal — open index.html directly)");
     }
 
     return TRUE;
 }
 
 VOID StopProtocolServers() {
+    KVM_LOG_INFO("Service", "Stopping HTTP server");
     StopHttpServer();
     if (g_wsServer) {
+        KVM_LOG_INFO("Service", "Stopping WebSocket server");
         WsAsync_Stop(g_wsServer);
         WsAsync_Destroy(g_wsServer);
         g_wsServer = nullptr;
-        std::wcout << L"[Service] WebSocket server stopped" << std::endl;
+        KVM_LOG_INFO("Service", "WebSocket server stopped");
     }
     if (g_vncServer) {
+        KVM_LOG_INFO("Service", "Stopping VNC server");
         g_vncServer->Stop();
         delete g_vncServer;
         g_vncServer = nullptr;
-        std::wcout << L"[Service] VNC server stopped" << std::endl;
+        KVM_LOG_INFO("Service", "VNC server stopped");
     }
 }
 

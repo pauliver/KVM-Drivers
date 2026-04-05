@@ -111,7 +111,7 @@ ULONG LoggerGetRecentEntries(
 _IRQL_requires_max_(DISPATCH_LEVEL)
 VOID LoggerSetLevel(_In_ PLOGGER_CONTEXT Context, _In_ UCHAR NewLevel);
 #else
-// ── User-mode prototypes ──────────────────────────────────────────────────────
+// ── User-mode Logger*  (context-based, bridges to global singleton) ───────────
 void LoggerInitialize(PLOGGER_CONTEXT Context, UCHAR MinLevel, ULONG Categories);
 void LoggerShutdown(PLOGGER_CONTEXT Context);
 void LoggerLog(PLOGGER_CONTEXT Context, UCHAR Level, ULONG Category,
@@ -119,7 +119,34 @@ void LoggerLog(PLOGGER_CONTEXT Context, UCHAR Level, ULONG Category,
     const CHAR* Format, ...);
 ULONG LoggerGetRecentEntries(PLOGGER_CONTEXT Context, PLOG_ENTRY Entries, ULONG MaxEntries);
 void LoggerSetLevel(PLOGGER_CONTEXT Context, UCHAR NewLevel);
+
+#ifdef __cplusplus
+extern "C" {
 #endif
+// ── UserLogger_*  process-level API (call from service.cpp / main) ────────────
+// UserLogger_Initialize MUST be called at process start with a real file path.
+// All other logging (LOG_INFO, LoggerLog, etc.) routes to the same global log.
+BOOL UserLogger_Initialize(const char* logFile, int minLevel, unsigned int categories);
+void UserLogger_Shutdown(void);
+void UserLogger_FlushSync(void);   // safe to call from crash / SEH handler
+void UserLogger_SetLevel(int level);
+void UserLogger_GetStats(unsigned long long* total, unsigned long long* errors,
+                         unsigned long long* warnings, unsigned long long* dropped);
+void UserLogger_Log(int level, unsigned int category, const char* component,
+                    const char* function, int line, const char* format, ...);
+#ifdef __cplusplus
+}
+#endif
+
+// ── KVM_LOG_* macros — no context needed, use global singleton ────────────────
+#define KVM_LOG_FATAL(comp, fmt, ...)  UserLogger_Log(LOG_LEVEL_FATAL,   LOG_CATEGORY_ALL, comp, __FUNCTION__, __LINE__, fmt, ##__VA_ARGS__)
+#define KVM_LOG_ERROR(comp, fmt, ...)  UserLogger_Log(LOG_LEVEL_ERROR,   LOG_CATEGORY_ALL, comp, __FUNCTION__, __LINE__, fmt, ##__VA_ARGS__)
+#define KVM_LOG_WARN(comp,  fmt, ...)  UserLogger_Log(LOG_LEVEL_WARNING, LOG_CATEGORY_ALL, comp, __FUNCTION__, __LINE__, fmt, ##__VA_ARGS__)
+#define KVM_LOG_INFO(comp,  fmt, ...)  UserLogger_Log(LOG_LEVEL_INFO,    LOG_CATEGORY_ALL, comp, __FUNCTION__, __LINE__, fmt, ##__VA_ARGS__)
+#define KVM_LOG_DEBUG(comp, fmt, ...)  UserLogger_Log(LOG_LEVEL_DEBUG,   LOG_CATEGORY_ALL, comp, __FUNCTION__, __LINE__, fmt, ##__VA_ARGS__)
+#define KVM_LOG_TRACE(comp, fmt, ...)  UserLogger_Log(LOG_LEVEL_TRACE,   LOG_CATEGORY_ALL, comp, __FUNCTION__, __LINE__, fmt, ##__VA_ARGS__)
+
+#endif // !_KERNEL_MODE
 
 // Convenience macros
 #define LOG_FATAL(logger, cat, comp, fmt, ...) \
