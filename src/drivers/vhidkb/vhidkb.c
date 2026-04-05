@@ -331,16 +331,34 @@ NTSTATUS vhidkbInjectKeyDown(
         return status;
     }
 
-    // Update device state
+    // Update modifier state (always reflects current modifier mask)
     DeviceContext->CurrentModifierKeys = inputReport->ModifierKeys;
-    for (int i = 0; i < VKB_MAX_KEYS; i++) {
-        DeviceContext->CurrentKeyCodes[i] = inputReport->KeyCodes[i];
+
+    // Add pressed key to the first empty slot in the held-key array.
+    // This preserves other simultaneously-held keys rather than overwriting them.
+    // (A key already present is not duplicated.)
+    UCHAR newKey = inputReport->KeyCodes[0];
+    if (newKey != 0) {
+        BOOLEAN alreadyHeld = FALSE;
+        int emptySlot = -1;
+        for (int i = 0; i < VKB_MAX_KEYS; i++) {
+            if (DeviceContext->CurrentKeyCodes[i] == newKey) {
+                alreadyHeld = TRUE;
+                break;
+            }
+            if (emptySlot < 0 && DeviceContext->CurrentKeyCodes[i] == 0) {
+                emptySlot = i;
+            }
+        }
+        if (!alreadyHeld && emptySlot >= 0) {
+            DeviceContext->CurrentKeyCodes[emptySlot] = newKey;
+        }
     }
 
-    // Send HID report
-    status = vhidkbSendHidReport(DeviceContext, 
-        inputReport->ModifierKeys, 
-        inputReport->KeyCodes, 
+    // Send HID report reflecting all currently-held keys
+    status = vhidkbSendHidReport(DeviceContext,
+        DeviceContext->CurrentModifierKeys,
+        DeviceContext->CurrentKeyCodes,
         VKB_MAX_KEYS);
 
     KdPrint(("vhidkb: InjectKeyDown - Modifier: 0x%x, Key: 0x%x\n", 
@@ -354,20 +372,45 @@ NTSTATUS vhidkbInjectKeyUp(
     _In_ WDFREQUEST Request
 )
 {
-    UNREFERENCED_PARAMETER(Request);
+    PVKB_INPUT_REPORT inputReport;
+    size_t bufferSize;
+    NTSTATUS status;
 
-    // Send all-zeroes report: both key codes AND modifier keys must be cleared
-    // so that held modifiers (Ctrl, Shift, Alt, etc.) are released.
-    UCHAR emptyKeys[VKB_MAX_KEYS] = {0};
-    NTSTATUS status = vhidkbSendHidReport(DeviceContext, 0, emptyKeys, 0);
-
-    // Clear full keyboard state
-    DeviceContext->CurrentModifierKeys = 0;
-    for (int i = 0; i < VKB_MAX_KEYS; i++) {
-        DeviceContext->CurrentKeyCodes[i] = 0;
+    status = WdfRequestRetrieveInputBuffer(
+        Request, sizeof(VKB_INPUT_REPORT), (PVOID*)&inputReport, &bufferSize);
+    if (!NT_SUCCESS(status)) {
+        // No buffer (e.g. IOCTL_VKB_RESET path) — clear everything
+        UCHAR emptyKeys[VKB_MAX_KEYS] = {0};
+        DeviceContext->CurrentModifierKeys = 0;
+        for (int i = 0; i < VKB_MAX_KEYS; i++) DeviceContext->CurrentKeyCodes[i] = 0;
+        return vhidkbSendHidReport(DeviceContext, 0, emptyKeys, 0);
     }
 
-    KdPrint(("vhidkb: InjectKeyUp - All keys and modifiers released\n"));
+    // Remove only the specific key that was released from the held-key array.
+    // Other simultaneously-held keys remain, so e.g. releasing C while holding
+    // Ctrl does not also release Ctrl.
+    UCHAR releasedKey = inputReport->KeyCodes[0];
+    if (releasedKey != 0) {
+        for (int i = 0; i < VKB_MAX_KEYS; i++) {
+            if (DeviceContext->CurrentKeyCodes[i] == releasedKey) {
+                DeviceContext->CurrentKeyCodes[i] = 0;
+                break;
+            }
+        }
+    }
+
+    // Modifier state comes from the client-reported value (reflects which modifiers
+    // are STILL held after this release, not just the released key's modifiers).
+    DeviceContext->CurrentModifierKeys = inputReport->ModifierKeys;
+
+    // Re-send updated state: released key is now absent; held keys remain.
+    status = vhidkbSendHidReport(DeviceContext,
+        DeviceContext->CurrentModifierKeys,
+        DeviceContext->CurrentKeyCodes,
+        VKB_MAX_KEYS);
+
+    KdPrint(("vhidkb: InjectKeyUp - released key=0x%x mods=0x%x\n",
+        releasedKey, DeviceContext->CurrentModifierKeys));
     return status;
 }
 
