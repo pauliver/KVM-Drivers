@@ -178,5 +178,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 - [BUILD.md](BUILD.md) — Build, install, and troubleshooting guide
 - [CONTRIBUTING.md](CONTRIBUTING.md) — Development workflow, code standards, PR process
 - [LICENSE](LICENSE) — MIT license with third-party attribution
+- [docs/Installation.md](docs/Installation.md) — All installation methods (MSI, script, pnputil), signing, verification, uninstall
+- [docs/Architecture.md](docs/Architecture.md) — System components, running modes, data flow, IPC, auth, adaptive quality
+- [docs/Operations.md](docs/Operations.md) — All usage scenarios (remote control, automation, testing, tray) + idle/non-use state reference
 - [docs/Security_Performance_Audit.md](docs/Security_Performance_Audit.md) — Security & performance audit (all 23 resolved)
 - [docs/WHQL_Certification_Guide.md](docs/WHQL_Certification_Guide.md) — Driver signing and HLK submission
