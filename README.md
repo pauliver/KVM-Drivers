@@ -2,7 +2,12 @@
 
 A Windows-based computer "piloting" system for remote management, remote control, and automated testing using virtual input/output devices that are indistinguishable from physical hardware.
 
-> **Status: Release Candidate v3** — All known gaps implemented (Mar 2026): VHF-based kernel HID injection (keyboard + gamepad), OpenH264 software H.264 fallback, KVM icon wired throughout tray. Only remaining item: WHQL EV cert purchase.
+> **Status: Alpha-0.1.5** (Apr 2026)
+> All functional components implemented and wiring-audited (RC v3, Mar 2026).
+> Apr 2026: Build system ported to VS 2026 v18 (`alpha-0.1.3`); logging overhauled (`alpha-0.1.5`) —
+> atomic fields, HOL-blocking fix, millisecond+TID timestamps, crash handler + minidump, log to `%%PROGRAMDATA%%\KVM-Drivers\KVMService.log`.
+> Kernel driver build infrastructure added (`build_drivers.bat` — WDK VS integration → NuGet WDK packages → EWDK fallback).
+> Only remaining external dependency: WHQL EV cert purchase.
 
 ---
 
@@ -24,7 +29,7 @@ A Windows-based computer "piloting" system for remote management, remote control
 | **C# .NET Wrapper** | ✅ Functional | P/Invoke interop, fluent API |
 | **Game Automation Extensions** | ✅ Functional | App launcher, UI automation, OCR, smart click |
 | **System Tray Application** | ✅ Functional | WPF, branded KVM icon throughout (`TaskbarIcon`, window, `.exe`), Start/Stop/Restart→SCM, minimize-to-tray |
-| **Unified Logging** | ✅ Functional | Lock-free ring buffer; kernel ETW (`EtwWrite`) now implemented |
+| **Unified Logging** | ✅ Functional | Lock-free ring buffer (8192 slots); `std::atomic` filter fields (no data race); HOL-blocking fixed in WriterLoop; ms+TID timestamps; `KVM_LOG_*` macros (no ctx ptr); `UserLogger_FlushSync()` for crash handler; log → `%PROGRAMDATA%\KVM-Drivers\KVMService.log`; kernel ETW (`EtwWrite`) |
 | **Performance Monitor** | ✅ Functional | Hitch detection, latency tracking |
 | **Adaptive Quality** | ✅ Functional | 5-tier FPS scaling (60→5) on load/latency |
 | **Rate Limiter** | ✅ Functional | Per-client, tier-aware (120→10 inputs/sec) |
@@ -113,6 +118,8 @@ KVM-Drivers/
 ├── tests/
 ├── tools/
 └── scripts/
+    ├── build_service.bat       # KVMService.exe — direct cl.exe, no MSBuild toolset
+    └── build_drivers.bat       # Kernel .sys — WDK VS integration / NuGet / EWDK
 ```
 
 ## Quick Start
@@ -120,19 +127,26 @@ KVM-Drivers/
 ### Building from Source
 
 ```powershell
-# Clone the repository
 git clone <repository-url>
 cd KVM-Drivers
 
-# Run the build script
-.\scripts\build.ps1
+# KVMService.exe + KVMTray.exe (no WDK needed)
+scripts\build_service.bat Release
 
-# Install drivers (requires admin)
-.\scripts\install-drivers.ps1
+# Kernel drivers — auto-selects WDK integration / NuGet WDK / EWDK
+scripts\build_drivers.bat Release
 
-# Start the system tray application
-.\src\tray\bin\KVMTray.exe
+# Install drivers on a test machine (requires admin + test-signing on)
+bcdedit /set testsigning on   # reboot once
+pnputil /add-driver build\Release\drivers\vhidkb.inf    /install
+pnputil /add-driver build\Release\drivers\vhidmouse.inf /install
+pnputil /add-driver build\Release\drivers\vxinput.inf   /install
+
+# Start the tray
+build\Release\bin\KVMTray.exe
 ```
+
+See [BUILD.md](BUILD.md) for all three kernel driver build options (WDK VS integration, NuGet packages, EWDK).
 
 ### Using the System Tray Application
 

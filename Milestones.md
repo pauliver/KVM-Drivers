@@ -2,10 +2,11 @@
 
 This document outlines the phased development approach for building the KVM-Drivers computer piloting system. Each milestone builds upon previous work, with deliverables that can be tested and validated independently.
 
-> **Last Updated:** March 30, 2026  
-> **Current Phase:** Release Candidate v3 — All known gaps implemented (Mar 2026).  
-> VHF-based kernel HID injection for keyboard + gamepad, OpenH264 software H.264 fallback, KVM branded icon throughout tray.  
-> Only remaining item: WHQL EV cert purchase.
+> **Last Updated:** April 5, 2026  
+> **Current Phase:** Alpha-0.1.5  
+> Functional implementation complete (RC v3, Mar 2026). April 2026: VS 2026 v18 build system fixes (`alpha-0.1.3`),  
+> comprehensive logging overhaul (`alpha-0.1.5`), and kernel driver build infrastructure (`build_drivers.bat`).  
+> Only external dependency remaining: WHQL EV cert purchase.
 
 ---
 
@@ -527,6 +528,72 @@ This document outlines the phased development approach for building the KVM-Driv
 
 ---
 
+## Milestone 13: VS 2026 Build System Fixes (alpha-0.1.3)
+
+**Completed:** April 5, 2026  
+**Tag:** `alpha-0.1.3`
+
+| Area | Work |
+|------|------|
+| Compiler upgrade | Ported all usermode C++ to VS 2026 v18 (MSVC 19.4x toolchain) |
+| Tray UI framework | Migrated from WinUI 3 / WindowsAppSDK to WPF — WinUI 3 not yet stable on VS2026 v18 |
+| C++ standard | Resolved `std::format`, `std::span`, `std::bit_cast` unavailability under C++17; replaced with C++20-compatible equivalents |
+| WDK VS integration | Documented absence of `WindowsKernelModeDriver10.0` toolset on VS2026; added NuGet + EWDK fallback paths |
+| Build scripts | `scripts/build_service.bat` — direct `cl.exe` compile path for KVMService.exe without MSBuild driver toolset |
+| Connection security | Cleared remaining `std::cerr`/`std::cout` from `connection_security.h`; all route to logger |
+
+---
+
+## Milestone 14: Logging Overhaul + Driver Build Infrastructure (alpha-0.1.5)
+
+**Completed:** April 5, 2026  
+**Tag:** `alpha-0.1.5`
+
+### Logger core fixes (`unified_logger_user.cpp`)
+
+| Bug / Gap | Fix |
+|-----------|-----|
+| Data race on `minLevel_`/`categories_` | Promoted to `std::atomic<UCHAR>`/`std::atomic<ULONG>` |
+| Head-of-line blocking in `WriterLoop` | Skip non-ready slots instead of `break`; stalled writer no longer blocks subsequent committed messages |
+| `totalMessages_`/`errorsLogged_`/`warningsLogged_` never incremented | Fixed; all three counters incremented on every `Log()` call |
+| `OutputDebugStringA` on hot path unconditionally | Now `#ifdef _DEBUG` only |
+| `LoggerInitialize` bridge re-opened file on second call | Now updates level/categories only if already running |
+| No log file opened at startup | `InitServiceLogger()` in `service.cpp` opens `%PROGRAMDATA%\KVM-Drivers\KVMService.log` before any other code runs |
+| No crash survivor path | `CrashHandler` (SEH `SetUnhandledExceptionFilter`) logs fatal, writes minidump to `KVMService_crash.dmp`, calls `UserLogger_FlushSync()` |
+| Second-resolution timestamps only | `GetLocalTime` with `wMilliseconds`; format: `[2026-04-05 11:27:46.123]` |
+| No thread ID in log lines | `[T%05lu]` field added |
+| Ring size 4096, slot 1024 bytes | Ring 8192, slot 512 bytes (better cache behavior) |
+
+### New public API
+
+```cpp
+// Process-level init (call once from wmain / ServiceMain):
+UserLogger_Initialize("%PROGRAMDATA%\\KVM-Drivers\\KVMService.log",
+    LOG_LEVEL_DEBUG, LOG_CATEGORY_ALL);
+UserLogger_FlushSync();   // safe in SEH/crash handler
+UserLogger_Shutdown();
+
+// Global KVM_LOG_* macros — no context pointer needed:
+KVM_LOG_INFO("Service", "Server started on port %d", port);
+KVM_LOG_WARN("DriverInterface", "vhidkb not found (err=%lu)", GetLastError());
+KVM_LOG_FATAL("Service", "UNHANDLED EXCEPTION code=0x%08lX", code);
+```
+
+### Coverage additions
+
+- **`service.cpp`** — every lifecycle path (start, stop, SCM control codes, each failure) now `KVM_LOG_*`
+- **`main.cpp`** — standalone mode, SCM dispatcher, Ctrl+C handler all structured-log
+- **`driver_interface.cpp`** — per-device open result logged (OK/MISSING + error code + fallback mode)
+- **`connection_security.h`** — all `std::cerr`/`std::cout` replaced with `KVM_LOG_*`
+
+### Kernel driver build infrastructure
+
+- **`scripts/build_drivers.bat`** — three-strategy build: WDK VS integration → NuGet WDK packages → EWDK instructions
+- **`src/drivers/*/packages.config`** (all four drivers) — `Microsoft.Windows.WDK.x64 10.0.26100.2454` + SDK CPP packages
+- **`BUILD.md`** — full "Three Options" section; VS 2026 compatibility noted throughout
+
+---
+
 ## Release Timeline Summary
 
 ```
@@ -537,7 +604,10 @@ Month 5-7:  Milestone 5 (Controller) + Milestone 6 (Display)
 Month 7-9:  Milestone 7 (Remote) + Milestone 8 (Tray Full)
 Month 9-12: Milestone 9 (Testing Framework + Game Automation)
 Month 12-14: Milestone 10 (Production)
-Month 14:   Milestone 11 (Full Wiring + Audit — RC v2)  ← COMPLETE
+Month 14:   Milestone 11 (Full Wiring + Audit — RC v2)   ← COMPLETE
+Month 14:   Milestone 12 (Gap Completions + Branding — RC v3) ← COMPLETE
+Month 15:   Milestone 13 (VS2026 Build Fixes — alpha-0.1.3)  ← COMPLETE
+Month 15:   Milestone 14 (Logging Overhaul — alpha-0.1.5)    ← COMPLETE
 ```
 
 **Total Estimated Duration**: 11-13 months for full production release

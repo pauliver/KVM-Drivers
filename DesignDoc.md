@@ -78,6 +78,9 @@
 
 Cross-platform logging interface for both kernel-mode and user-mode components with zero spinlock contention.
 
+> **alpha-0.1.5 (Apr 2026)**: User-mode logger comprehensively overhauled — data races fixed,
+> head-of-line blocking eliminated, counters wired, crash-handler integration added.
+
 **Implementation** (`src/common/logging/`):
 ```c
 // Kernel-mode: lock-free ring buffer (unified_logger.c)
@@ -93,20 +96,50 @@ typedef struct _LOGGER_CONTEXT {
     ULONG64 WarningsLogged;
 } LOGGER_CONTEXT;
 
-// User-mode: 4096-slot lock-free ring (unified_logger_user.cpp)
-// Writers claim slots via fetch_add + CAS; reader drains committed slots.
+// User-mode: 8192-slot lock-free ring (unified_logger_user.cpp, alpha-0.1.5)
+// Writers claim slots via fetch_add + CAS; reader skips non-ready slots
+// (no HOL-blocking); minLevel_/categories_ are std::atomic (no data race).
 struct LockFreeLogSlot {
-    std::atomic<int> state;  // 0=empty, 1=writing, 2=ready
-    char message[1024];
+    std::atomic<int> state;    // FREE(0) → WRITING(1) → READY(2) → FREE(0)
+    char message[512];
 };
 ```
 
-**Features**:
-- **Kernel**: Pure `InterlockedIncrement` slot-claiming — spinlock removed
-- **User-mode**: `fetch_add` + compare-exchange, 4096-slot ring, background drain thread
-- Dropped-message counter (ring full fallback — never blocks)
-- Background file writer thread (does not touch hot path)
-- ETW integration for Windows Event Viewer
+**User-mode design (alpha-0.1.5 — fixed issues in bold)**:
+- **`minLevel_` and `categories_` are `std::atomic`** — hot-path reads never race with `SetMinLevel` writes
+- **`WriterLoop` skips non-ready slots** (was: `break` on first non-ready → HOL-block; now: `readHead_++; scanned++` to skip and re-try on next iteration — a stalled writer cannot delay subsequent committed messages)
+- **All three counters incremented** on every `Log()` call (`totalMessages_`, `errorsLogged_`, `warningsLogged_`)
+- **`OutputDebugStringA` `#ifdef _DEBUG` only** — never blocks production on debugger attach
+- `fetch_add` + compare-exchange slot-claiming — ring full → drop + `droppedMessages_` counter (never blocks)
+- Background file writer thread — does not touch hot path
+- 8192-slot ring (was 4096), 512-byte slots (was 1024) — better cache behavior
+- **Millisecond timestamps + thread ID** in every line: `[2026-04-05 11:27:46.123] [INFO ] [T01234] [component] [func:line] msg`
+- ETW integration for Windows Event Viewer (kernel path)
+
+**Process-level API** (`UserLogger_*` — call from `wmain` / `ServiceMain`):
+```cpp
+// Must be first call — opens %PROGRAMDATA%\KVM-Drivers\KVMService.log
+UserLogger_Initialize(logPath, LOG_LEVEL_DEBUG, LOG_CATEGORY_ALL);
+UserLogger_FlushSync();   // safe in SEH / crash handler (drains ring + fflush)
+UserLogger_Shutdown();    // flush + write footer + close file
+
+// KVM_LOG_* macros (unified_logger.h) — no context pointer needed:
+KVM_LOG_INFO("Service",         "WebSocket server started on port %d", port);
+KVM_LOG_WARN("DriverInterface", "vhidkb not found (err=%lu) — SendInput fallback",
+    GetLastError());
+KVM_LOG_FATAL("Service",        "UNHANDLED EXCEPTION: code=0x%08lX addr=%p", code, addr);
+```
+
+**Crash handler** (`service.cpp`):
+```cpp
+// Installed via SetUnhandledExceptionFilter at wmain entry:
+LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
+    KVM_LOG_FATAL("Service", "UNHANDLED EXCEPTION: code=0x%08lX ...", ...);
+    MiniDumpWriteDump(...);            // writes KVMService_crash.dmp
+    UserLogger_FlushSync();            // drain ring before exit
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+```
 
 ### Performance Monitoring Framework
 
