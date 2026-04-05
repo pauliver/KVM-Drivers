@@ -288,6 +288,23 @@ VOID vxinputEvtIoDeviceControl(
         break;
     }
 
+    case IOCTL_VXINPUT_SET_RUMBLE: {
+        // Input: XUSB_RUMBLE_STATE (4 bytes). Slot encoded in bLeftTriggerMotor's
+        // upper nibble for legacy compat, or use bReportId-less slot=0 default.
+        // For simplicity, accept a 4-byte XUSB_RUMBLE_STATE and store for slot 0.
+        PXUSB_RUMBLE_STATE rumble;
+        size_t bufLen;
+        status = WdfRequestRetrieveInputBuffer(
+            Request, sizeof(XUSB_RUMBLE_STATE), (PVOID*)&rumble, &bufLen);
+        if (NT_SUCCESS(status)) {
+            // Store rumble state in slot 0 (single-slot path; per-slot via automation)
+            RtlCopyMemory(&busCtx->RumbleState[0], rumble, sizeof(XUSB_RUMBLE_STATE));
+            KdPrint(("vxinput: SET_RUMBLE L=%u R=%u\n",
+                (ULONG)rumble->bLeftMotor, (ULONG)rumble->bRightMotor));
+        }
+        break;
+    }
+
     default:
         status = STATUS_INVALID_DEVICE_REQUEST;
         break;

@@ -137,7 +137,8 @@ using ClientDisconnectedCallback = std::function<void(VNCClientInfo& client)>;
 // VNC Server class
 class VNCServer {
 public:
-    VNCServer();
+    // maxClients: runtime connection cap (default 10). Pass AppSettings.VncMaxClients.
+    explicit VNCServer(int maxClients = 10);
     ~VNCServer();
     
     // Lifecycle

@@ -311,6 +311,20 @@ private:
                 continue;
             }
             
+            // Periodically expire controller holds (runs every select() cycle ~100ms)
+            {
+                ULONGLONG nowH = GetTickCount64();
+                for (int cs = 0; cs < 4; cs++) {
+                    ControllerHold& h = controllerHolds_[cs];
+                    if (h.active && nowH - h.releasedAt >= CONTROLLER_HOLD_MS) {
+                        if (driverInterface_) driverInterface_->ReleaseControllerSlot(cs);
+                        h.active = false;
+                        LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
+                            "Controller hold slot %d expired (no reconnect)", cs);
+                    }
+                }
+            }
+
             // Check for new connections
             if (FD_ISSET(listenSocket_, &readSet)) {
                 AcceptNewConnection();
@@ -1345,8 +1359,11 @@ void AsyncWebSocketServer::StreamLoop() {
         res->Release();
         streamDupl_->ReleaseFrame();
 
-        // ~30 fps target
-        std::this_thread::sleep_for(std::chrono::milliseconds(33));
+        // Poll system load and sync jpeg quality + fps from adaptive tier
+        adaptiveQuality_.CheckSystemLoad();
+        streamQuality_ = adaptiveQuality_.GetSettings().jpegQuality;
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(adaptiveQuality_.GetFrameIntervalMs()));
     }
 
     LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "WsStream", "Stream thread stopped");

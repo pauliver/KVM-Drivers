@@ -379,7 +379,9 @@ BOOL StartProtocolServers() {
     std::wcout << L"[Service] WebSocket server started on port 8443" << std::endl;
 
     // --- VNC server (RFB 3.8, port 5900) ---
-    g_vncServer = new KVMDrivers::Remote::VNCServer();
+    int vncMaxClients = ReadSettingInt("VncMaxClients", 10);
+    std::cout << "[Service] VNC max clients: " << vncMaxClients << std::endl;
+    g_vncServer = new KVMDrivers::Remote::VNCServer(vncMaxClients);
     if (!g_vncServer->Start()) {
         std::wcerr << L"[Service] Failed to start VNC server on port 5900 (non-fatal)" << std::endl;
         delete g_vncServer;

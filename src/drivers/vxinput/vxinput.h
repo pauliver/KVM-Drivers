@@ -12,6 +12,8 @@
 #define IOCTL_VXINPUT_SUBMIT_REPORT        CTL_CODE(FILE_DEVICE_VXINPUT, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_VXINPUT_GET_RUMBLE           CTL_CODE(FILE_DEVICE_VXINPUT, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_VXINPUT_GET_CONTROLLER_COUNT CTL_CODE(FILE_DEVICE_VXINPUT, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS)
+// User-mode can push a rumble state to a slot (for automation / server-side haptic feedback).
+#define IOCTL_VXINPUT_SET_RUMBLE           CTL_CODE(FILE_DEVICE_VXINPUT, 0x805, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 #define VXINPUT_MAX_CONTROLLERS 4
 
@@ -69,8 +71,9 @@ typedef struct _VXINPUT_BUS_CONTEXT {
     ULONG      NextControllerIndex;
     // Per-slot VHF handles: slot 0-3 correspond to XInput player 1-4.
     // NULL = slot not yet created. Dynamically created/destroyed via IOCTLs.
-    VHFHANDLE   VhfHandle[VXINPUT_MAX_CONTROLLERS];
-    XUSB_REPORT LastReport[VXINPUT_MAX_CONTROLLERS];
+    VHFHANDLE         VhfHandle[VXINPUT_MAX_CONTROLLERS];
+    XUSB_REPORT       LastReport[VXINPUT_MAX_CONTROLLERS];
+    XUSB_RUMBLE_STATE RumbleState[VXINPUT_MAX_CONTROLLERS];  // last SET_RUMBLE per slot
 } VXINPUT_BUS_CONTEXT, *PVXINPUT_BUS_CONTEXT;
 
 // Controller context (one per virtual gamepad)

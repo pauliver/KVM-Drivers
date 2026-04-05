@@ -19,10 +19,13 @@ public:
     // Check if using driver or SendInput
     bool IsDriverInjectionAvailable() const;
 
-    // Keyboard
+    // Keyboard (HID usage codes — used by the web client)
     bool InjectKeyDown(UCHAR keyCode, UCHAR modifiers = 0);
     bool InjectKeyUp(UCHAR keyCode, UCHAR modifiers = 0);
     bool InjectKeyCombo(const std::vector<std::pair<UCHAR, UCHAR>>& keys);
+    // Windows Virtual Key injection (used by VNC: X11 keysyms are already mapped to VK codes)
+    // Goes straight to SendInput — the vhidkb driver speaks HID usage codes, not VK codes.
+    bool InjectVirtualKey(WORD vk, bool keyUp, bool extended = false);
 
     // Mouse
     bool InjectMouseMove(LONG x, LONG y, bool absolute = false);

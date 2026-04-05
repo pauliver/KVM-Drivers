@@ -258,8 +258,9 @@ static bool VncDesEncrypt(const UINT8 challenge[16], const char* password, UINT8
 
 class VncServerImpl {
 public:
-    VncServerImpl(int port = 5900) 
-        : port_(port), running_(false), listenSocket_(INVALID_SOCKET)
+    VncServerImpl(int port = 5900, int maxClients = 10) 
+        : port_(port), maxClients_(maxClients < 1 ? 1 : maxClients)
+        , running_(false), listenSocket_(INVALID_SOCKET)
         , framebufferWidth_(1920), framebufferHeight_(1080)
         , tlsEnabled_(false), tlsCert_(nullptr) {
         // Pre-allocate framebuffer to avoid per-request heap allocation
@@ -356,7 +357,7 @@ private:
     std::thread acceptThread_;
 
     std::atomic<int> connectionCount_{0};
-    static constexpr int MAX_CONNECTIONS = 10;
+    int maxClients_;                               // set from AppSettings.VncMaxClients
     static constexpr int SOCKET_TIMEOUT_MS = 30000;  // 30 seconds
 
     int framebufferWidth_;
@@ -579,7 +580,7 @@ private:
             }
             
             // Check connection limit
-            if (connectionCount_ >= MAX_CONNECTIONS) {
+            if (connectionCount_ >= maxClients_) {
                 closesocket(clientSocket);
                 continue;
             }
@@ -1128,14 +1129,24 @@ private:
             return;
         }
 
-        // Inject via DriverInterface
+        // Extended-key flag required for navigation, function, and right-side
+        // modifier keys so that the OS distinguishes them from numpad duplicates.
+        static const WORD EXTENDED_VKS[] = {
+            VK_INSERT, VK_DELETE, VK_HOME, VK_END,
+            VK_PRIOR,  VK_NEXT,  VK_UP,   VK_DOWN, VK_LEFT, VK_RIGHT,
+            VK_RCONTROL, VK_RMENU, VK_RWIN,
+            VK_DIVIDE,   VK_NUMLOCK, VK_SNAPSHOT,
+        };
+        bool extended = false;
+        for (WORD ev : EXTENDED_VKS) {
+            if ((WORD)vk == ev) { extended = true; break; }
+        }
+
+        // InjectVirtualKey goes directly to SendInput with the VK code.
+        // InjectKeyDown/Up must NOT be used here: they expect HID usage codes.
         bool ok = false;
         if (driverInterface_) {
-            if (down) {
-                ok = driverInterface_->InjectKeyDown((UCHAR)vk, 0);
-            } else {
-                ok = driverInterface_->InjectKeyUp((UCHAR)vk, 0);
-            }
+            ok = driverInterface_->InjectVirtualKey((WORD)vk, !down, extended);
         }
         std::cout << "[VNC] KeyEvent: keysym=0x" << std::hex << keysym
                   << " vk=0x" << vk << std::dec
@@ -1195,7 +1206,7 @@ private:
 };
 
 // Public API
-VNCServer::VNCServer() : impl_(new VncServerImpl()) {}
+VNCServer::VNCServer(int maxClients) : impl_(new VncServerImpl(5900, maxClients)) {}
 VNCServer::~VNCServer() { delete impl_; }
 bool VNCServer::Start() { return impl_->Start(); }
 void VNCServer::Stop() { impl_->Stop(); }

@@ -410,12 +410,17 @@ namespace KVM.Tray
 
         private void DisconnectClient_Click(object sender, RoutedEventArgs e)
         {
+            // UI-ONLY: removes the row from the tray's connection list but does NOT
+            // reach the service process or close the socket.  A real disconnect
+            // requires an IPC channel (named pipe / REST endpoint) from the tray to
+            // the KVMService so it can call closesocket() on the matching client.
+            // TODO: implement IPC disconnect channel.
             var button = sender as Button;
             var connection = button?.DataContext as ConnectionInfo;
             if (connection != null)
             {
                 connections.Remove(connection);
-                AppendLog($"Disconnected client {connection.ClientIP}");
+                AppendLog($"[UI] Removed '{connection.ClientIP}' from list (socket not closed — IPC not yet implemented)");
             }
         }
 

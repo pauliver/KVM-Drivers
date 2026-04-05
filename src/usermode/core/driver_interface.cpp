@@ -469,6 +469,19 @@ bool DriverInterface::InjectMouseScroll(int vertical, int horizontal) {
     return false;
 }
 
+bool DriverInterface::InjectVirtualKey(WORD vk, bool keyUp, bool extended) {
+    // VNC delivers X11 keysyms already converted to Windows VK codes.
+    // The vhidkb driver speaks HID usage codes so we cannot go through
+    // InjectKeyDown/Up (which would map VK→HID incorrectly).  Use SendInput.
+    if (vk == 0) return false;
+    INPUT in = {};
+    in.type        = INPUT_KEYBOARD;
+    in.ki.wVk      = vk;
+    in.ki.dwFlags  = (keyUp ? KEYEVENTF_KEYUP : 0)
+                   | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
+    return SendInput(1, &in, sizeof(INPUT)) == 1;
+}
+
 bool DriverInterface::InjectControllerReport(const XUSB_REPORT& report) {
     std::lock_guard<std::mutex> lock(handleMutex_);
     if (controllerHandle == INVALID_HANDLE_VALUE) return false;
@@ -569,12 +582,13 @@ bool DriverInterface::SetControllerRumble(UCHAR leftMotor, UCHAR rightMotor) {
     std::lock_guard<std::mutex> lock(handleMutex_);
     if (controllerHandle == INVALID_HANDLE_VALUE) return false;
 
-    struct RumbleData { UCHAR left; UCHAR right; } data = { leftMotor, rightMotor };
+    XUSB_RUMBLE_STATE rumble = {};
+    rumble.bLeftMotor  = leftMotor;
+    rumble.bRightMotor = rightMotor;
     DWORD bytesReturned = 0;
-    // IOCTL_VXINPUT_SET_RUMBLE = 0x22A014 (placeholder code same as submit+1)
     BOOL ok = DeviceIoControl(controllerHandle,
-        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x805, METHOD_BUFFERED, FILE_ANY_ACCESS),
-        &data, sizeof(data), NULL, 0, &bytesReturned, NULL);
+        IOCTL_VXINPUT_SET_RUMBLE,
+        &rumble, sizeof(rumble), NULL, 0, &bytesReturned, NULL);
     return ok != FALSE;
 }
 
