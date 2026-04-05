@@ -11,7 +11,9 @@
 #include <atomic>
 #include <queue>
 
-#include "../usermode/video/video_pipeline.cpp"
+// VideoPipeline is compiled as a separate translation unit.
+class VideoPipeline;
+struct VideoPacket;
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -171,8 +173,6 @@ private:
     UINT64 framesEncoded_;
     double avgCaptureTimeMs_;
     
-    void* context_;  // Placeholder
-    
     bool InitializeD3D11() {
         D3D_FEATURE_LEVEL featureLevels[] = {
             D3D_FEATURE_LEVEL_11_1,
@@ -201,15 +201,14 @@ private:
             auto startTime = std::chrono::steady_clock::now();
 
             if (iddHandle_) {
-                // Real IDD path: request a shared-texture frame via IOCTL
-                // and copy it into the pipeline's input buffer.
-                // IOCTL_IDD_GET_FRAME is a placeholder for the actual IDD IOCTL.
-                // When the IDD driver exposes a shared DXGI texture handle, open
-                // it with ID3D11Device::OpenSharedResource, then CopyResource into
-                // the encoder's input texture.
-                // For now we fall through to the test-pattern path below while
-                // the IDD shared-texture protocol is finalized.
-                (void)iddHandle_;
+                // IDD shared-texture path: NOT YET IMPLEMENTED.
+                // When the IDD driver exposes a shared DXGI texture, the flow is:
+                //   DeviceIoControl(iddHandle_, IOCTL_IDD_GET_FRAME, ...) → HANDLE
+                //   d3dDevice_->OpenSharedResource(handle) → ID3D11Texture2D
+                //   pipeline_->SubmitTexture(tex)  (or CopyResource to staging)
+                // Until the IDD IOCTL contract is defined we fall through and
+                // always produce a test-pattern frame so callers get data.
+                (void)iddHandle_;  // suppress unused-variable warning
             }
 
             // Test-pattern / fallback: submit a null frame so the pipeline keeps
