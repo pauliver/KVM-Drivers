@@ -44,7 +44,7 @@ namespace KVM.Tray
         
         // Connection limits
         public int VncMaxClients { get; set; } = 10;
-        public int WsMaxClients  { get; set; } = 20;
+        public int WsMaxClients  { get; set; } = 10;  // must be ≤ WS_MAX_CLIENTS (32) in websocket_server_async.cpp
 
         // VNC security
         public bool   VncAnonTls    { get; set; } = false;

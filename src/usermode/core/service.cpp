@@ -8,10 +8,12 @@
 #include <vector>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <shlobj.h>
 #include "../remote/native/websocket_server_async.h"
 #include "../remote/vnc/vnc_server.h"
 
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "shell32.lib")
 
 static void* g_wsServer  = nullptr;
 static KVMDrivers::Remote::VNCServer* g_vncServer = nullptr;
@@ -334,9 +336,41 @@ VOID CleanupDriverInterface() {
     // Servers own their DriverInterface instances; cleaned up in StopProtocolServers.
 }
 
+// Read a single integer value from the tray's JSON settings file.
+// Returns defaultVal if the file is missing, unreadable, or the key is absent.
+// Uses a simple string search — no JSON library needed for one integer.
+static int ReadSettingInt(const char* key, int defaultVal)
+{
+    wchar_t appData[MAX_PATH] = {};
+    if (FAILED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, appData)))
+        return defaultVal;
+
+    std::wstring path = std::wstring(appData) + L"\\KVM-Drivers\\settings.json";
+    std::ifstream f(path);
+    if (!f.is_open()) return defaultVal;
+
+    std::string json((std::istreambuf_iterator<char>(f)),
+                      std::istreambuf_iterator<char>());
+
+    // Search for  "key": <digits>
+    std::string needle = std::string("\"") + key + "\"";
+    auto pos = json.find(needle);
+    if (pos == std::string::npos) return defaultVal;
+
+    pos = json.find_first_of("0123456789", pos + needle.size());
+    if (pos == std::string::npos) return defaultVal;
+
+    try { return std::stoi(json.substr(pos)); }
+    catch (...) { return defaultVal; }
+}
+
 BOOL StartProtocolServers() {
+    // Read WsMaxClients from tray settings (default 10 if not found)
+    int wsMaxClients = ReadSettingInt("WsMaxClients", 10);
+    std::cout << "[Service] WS max clients: " << wsMaxClients << std::endl;
+
     // --- Async WebSocket server (JSON-RPC input injection, port 8443) ---
-    g_wsServer = WsAsync_Create(8443);
+    g_wsServer = WsAsync_Create(8443, wsMaxClients);
     if (!g_wsServer || !WsAsync_Start(g_wsServer)) {
         std::wcerr << L"[Service] Failed to start WebSocket server on port 8443" << std::endl;
         if (g_wsServer) { WsAsync_Destroy(g_wsServer); g_wsServer = nullptr; }

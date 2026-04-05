@@ -3,7 +3,9 @@
 // without needing to include the full class definition.
 #pragma once
 
-void* WsAsync_Create(int port);
+// maxClients: runtime connection cap, clamped to [1, WS_MAX_CLIENTS=32].
+// Pass AppSettings.WsMaxClients here; defaults to 10 if omitted.
+void* WsAsync_Create(int port, int maxClients = 10);
 bool  WsAsync_Start(void* srv);
 void  WsAsync_Stop(void* srv);
 void  WsAsync_Destroy(void* srv);

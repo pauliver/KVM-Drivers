@@ -35,7 +35,10 @@
 #pragma comment(lib, "crypt32.lib")
 
 // Configuration
-#define WS_MAX_CLIENTS 10
+// WS_MAX_CLIENTS is the compile-time array ceiling.
+// The runtime limit is AsyncWebSocketServer::maxClients_ which is set from
+// AppSettings.WsMaxClients and clamped to [1, WS_MAX_CLIENTS].
+#define WS_MAX_CLIENTS 32
 #define WS_BUFFER_SIZE 65536
 #define WS_SELECT_TIMEOUT_MS 100
 #define WS_INJECTION_QUEUE_SIZE 100
@@ -84,8 +87,9 @@ struct InjectionMessage {
 
 class AsyncWebSocketServer {
 public:
-    AsyncWebSocketServer(int port = 8443) 
+    AsyncWebSocketServer(int port = 8443, int maxClients = 10) 
         : port_(port)
+        , maxClients_(maxClients < 1 ? 1 : maxClients > WS_MAX_CLIENTS ? WS_MAX_CLIENTS : maxClients)
         , running_(false)
         , listenSocket_(INVALID_SOCKET)
         , driverInterface_(nullptr)
@@ -109,17 +113,18 @@ public:
         driverInterface_ = new DriverInterface();
         driverInterface_->Initialize();
         
-        // Clear clients
+        // Clear clients (use WS_MAX_CLIENTS for array sizing; maxClients_ for runtime cap)
         for (int i = 0; i < WS_MAX_CLIENTS; i++) {
             clients_[i].socket = INVALID_SOCKET;
             clients_[i].connected = false;
             clients_[i].handshaked = false;
+            streamingClients_[i] = false;
+            clients_[i].controllerSlot = -1;
         }
-        for (int i = 0; i < WS_MAX_CLIENTS; i++) { streamingClients_[i] = false; clients_[i].controllerSlot = -1; }
         for (int i = 0; i < 4; i++) { controllerSlotOwner_[i] = -1; controllerHolds_[i] = {}; }
         
-        LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket", 
-            "Server initialized on port %d", port);
+        LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
+            "Server initialized on port %d (max %d clients)", port, maxClients_);
     }
     
     ~AsyncWebSocketServer() {
@@ -235,7 +240,7 @@ public:
         }
         
         // Close all client sockets
-        for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+        for (int i = 0; i < maxClients_; i++) {
             if (clients_[i].socket != INVALID_SOCKET) {
                 closesocket(clients_[i].socket);
                 clients_[i].socket = INVALID_SOCKET;
@@ -272,7 +277,7 @@ private:
             int maxFd = (int)listenSocket_;
             
             // Add client sockets
-            for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+            for (int i = 0; i < maxClients_; i++) {
                 if (clients_[i].socket != INVALID_SOCKET) {
                     FD_SET(clients_[i].socket, &readSet);
                     
@@ -312,7 +317,7 @@ private:
             }
             
             // Handle client I/O
-            for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+            for (int i = 0; i < maxClients_; i++) {
                 if (clients_[i].socket == INVALID_SOCKET) continue;
                 
                 // Check for errors
@@ -394,9 +399,9 @@ private:
             sec.authGate.DecisionName(decision), clientIP);
         sec.auditLog.LogConnect(clientIP, "WebSocket");
 
-        // Find free slot
+        // Find free slot (within runtime maxClients_ cap, not the array ceiling)
         int slot = -1;
-        for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+        for (int i = 0; i < maxClients_; i++) {
             if (!clients_[i].connected) {
                 slot = i;
                 break;
@@ -405,7 +410,8 @@ private:
 
         if (slot == -1) {
             LOG_WARNING(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
-                "Too many clients, rejecting connection from %s", clientIP);
+                "Too many clients (%d/%d), rejecting connection from %s",
+                maxClients_, maxClients_, clientIP);
             sec.auditLog.LogDisconnect(clientIP, "WebSocket", "max clients");
             closesocket(clientSocket);
             return;
@@ -810,7 +816,7 @@ private:
                 if (driverInterface_ && msg.intParams.size() >= 7) {
                     // Find the client index that owns this response socket
                     int clientIdx = -1;
-                    for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+                    for (int i = 0; i < maxClients_; i++) {
                         if (clients_[i].socket == msg.responseSocket && clients_[i].connected) {
                             clientIdx = i;
                             break;
@@ -888,7 +894,7 @@ private:
                 : "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Injection failed\"},\"id\":" + std::to_string(msg.requestId) + "}";
             
             // Find client and queue response
-            for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+            for (int i = 0; i < maxClients_; i++) {
                 if (clients_[i].socket == msg.responseSocket && clients_[i].connected) {
                     std::lock_guard<std::mutex> lock(clientsMutex_);
                     clients_[i].sendBuffer += EncodeWebSocketFrame(response);
@@ -907,6 +913,22 @@ private:
     void SendClose(int clientIndex);
     void SendPong(int clientIndex, const std::vector<BYTE>& payload);
     void DisconnectClient(int clientIndex);
+
+    // Network configuration (set at construction, immutable after Start())
+    int port_;
+    int maxClients_;  // runtime cap ≤ WS_MAX_CLIENTS; set from AppSettings.WsMaxClients
+    bool running_;
+    SOCKET listenSocket_;
+    DriverInterface*    driverInterface_;
+    LOGGER_CONTEXT*     logger_;
+    PERF_MONITOR_CONTEXT* perfMonitor_;
+    std::thread networkThread_;
+    std::thread injectionThread_;
+    WSClient clients_[WS_MAX_CLIENTS];
+    std::mutex clientsMutex_;
+    std::queue<InjectionMessage> injectionQueue_;
+    std::mutex injectionMutex_;
+    std::condition_variable injectionCV_;
 
     // Adaptive quality controller - shared across all clients
     AdaptiveQuality adaptiveQuality_;
@@ -1306,7 +1328,7 @@ void AsyncWebSocketServer::StreamLoop() {
                         std::string frame = EncodeBinaryFrame(jpeg.data(), jpeg.size());
                         static constexpr size_t MAX_SEND_BUF = 1 * 1024 * 1024; // 1 MB
                         std::lock_guard<std::mutex> lock(clientsMutex_);
-                        for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+                        for (int i = 0; i < maxClients_; i++) {
                             if (streamingClients_[i] && clients_[i].connected) {
                                 if (clients_[i].sendBuffer.size() < MAX_SEND_BUF) {
                                     clients_[i].sendBuffer += frame;
@@ -1406,7 +1428,7 @@ std::string AsyncWebSocketServer::EncodeBinaryFrame(const void* data, size_t len
 }
 
 void AsyncWebSocketServer::StartClientStream(int clientIndex, int requestId) {
-    if (clientIndex < 0 || clientIndex >= WS_MAX_CLIENTS) return;
+    if (clientIndex < 0 || clientIndex >= maxClients_) return;
 
     if (!streamingClients_[clientIndex]) {
         streamingClients_[clientIndex] = true;
@@ -1441,7 +1463,7 @@ void AsyncWebSocketServer::StartClientStream(int clientIndex, int requestId) {
 }
 
 void AsyncWebSocketServer::StopClientStream(int clientIndex, int requestId) {
-    if (clientIndex < 0 || clientIndex >= WS_MAX_CLIENTS) return;
+    if (clientIndex < 0 || clientIndex >= maxClients_) return;
 
     if (streamingClients_[clientIndex]) {
         streamingClients_[clientIndex] = false;
@@ -1464,7 +1486,7 @@ void AsyncWebSocketServer::PushResolutionChange(int w, int h) {
         "\"params\":{\"width\":" + std::to_string(w) +
         ",\"height\":" + std::to_string(h) + "}}";
     std::lock_guard<std::mutex> lock(clientsMutex_);
-    for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+    for (int i = 0; i < maxClients_; i++) {
         if (streamingClients_[i] && clients_[i].connected) {
             clients_[i].sendBuffer += EncodeWebSocketFrame(msg);
         }
@@ -1476,7 +1498,7 @@ void AsyncWebSocketServer::PushResolutionChange(int w, int h) {
 // ============================================================
 #include "websocket_server_async.h"
 
-void* WsAsync_Create(int port)   { return new AsyncWebSocketServer(port); }
+void* WsAsync_Create(int port, int maxClients) { return new AsyncWebSocketServer(port, maxClients); }
 bool  WsAsync_Start(void* srv)   { return static_cast<AsyncWebSocketServer*>(srv)->Start(); }
 void  WsAsync_Stop(void* srv)    { static_cast<AsyncWebSocketServer*>(srv)->Stop(); }
 void  WsAsync_Destroy(void* srv) { delete static_cast<AsyncWebSocketServer*>(srv); }
