@@ -1,4 +1,9 @@
 // tls_server.cpp - TLS 1.3 secure server implementation
+// NOTE: This file is currently unused infrastructure.
+// - The async WebSocket server (websocket_server_async.cpp) runs plain WS.
+// - The VNC server uses its own SChannel wrapper in vnc_tls.h.
+// To add TLS to the WebSocket path, instantiate TlsServer here and
+// have service.cpp create it on port 8443 in front of AsyncWebSocketServer.
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
