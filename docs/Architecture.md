@@ -74,7 +74,7 @@ System structure, component responsibilities, runtime topology, data flow, and i
 └──────────────────────────────  │  ──────────────────────────────┘
                         File IPC │ (pending_approvals\*.request/result)
                    ┌─────────────▼──────────────┐
-                   │  %LOCALAPPDATA%\KVM-Drivers\ │
+                   │  %PROGRAMDATA%\KVM-Drivers\  │
                    │  settings.json               │
                    │  trusted_clients.txt          │
                    │  audit_log.csv                │
@@ -244,7 +244,7 @@ wmain (Program.cpp)
        └─ Success → new WPF Application + new MainWindow
             ├─ App.OnStartup → TaskbarIcon initialized (NotifyIcon via Hardcodet.Wpf.TaskbarNotification)
             └─ MainWindow ctor
-                 ├─ LoadSettings()         → %LOCALAPPDATA%\KVM-Drivers\settings.json
+                 ├─ LoadSettings()         → %PROGRAMDATA%\KVM-Drivers\settings.json
                  ├─ ApplySettings()        → populates all UI fields
                  ├─ InitializeData()       → creates empty connections ObservableCollection
                  ├─ RefreshConnectionUrls() → fills URL display fields from local IP + port settings
@@ -407,11 +407,11 @@ KVMService and KVMTray run as separate processes and communicate exclusively thr
 
 | Mechanism | Direction | Path | Purpose |
 |-----------|-----------|------|---------|
-| `settings.json` | Tray → Service | `%LOCALAPPDATA%\KVM-Drivers\` | Service reads at startup; tray writes on Save |
-| `trusted_clients.txt` | Tray writes, Service reads | `%LOCALAPPDATA%\KVM-Drivers\` | Approved IPs + expiry |
+| `settings.json` | Tray → Service | `%PROGRAMDATA%\KVM-Drivers\` | Service reads at startup; tray writes on Save |
+| `trusted_clients.txt` | Tray writes, Service reads | `%PROGRAMDATA%\KVM-Drivers\` | Approved IPs + expiry |
 | `*.request` files | Service → Tray | `…\pending_approvals\` | New connection pending approval |
 | `*.result` files | Tray → Service | `…\pending_approvals\` | Approval decision (approved/rejected) |
-| `audit_log.csv` | Service writes, Tray reads | `%LOCALAPPDATA%\KVM-Drivers\` | Per-connection event log |
+| `audit_log.csv` | Service writes, Tray reads | `%PROGRAMDATA%\KVM-Drivers\` | Per-connection event log |
 
 There is **no named pipe, no COM, no socket** between the two processes. This is intentional: it keeps the service's security boundary clean and avoids privilege escalation paths.
 
@@ -459,4 +459,4 @@ Written by `ConnectionSecurityContext::AuditLog` in C++. Events: `Connected`, `D
 `PERF_MONITOR_CONTEXT` (`src/common/performance/`): hitch detection, p50/p95/p99 latency tracking. `PerfMonitorStart`/`PerfMonitorEnd` bracket injection operations in the WebSocket injection worker.
 
 ### Tray log viewer
-`MainWindow.LogViewer` (WPF `TextBox`) — `AppendLog()` appends timestamped lines, auto-scrolls, caps at 100 KB (trims to last 50 KB). Exportable via "Export Logs" button to `%LOCALAPPDATA%\KVM-Drivers\kvmlogs.txt`.
+`MainWindow.LogViewer` (WPF `TextBox`) — `AppendLog()` appends timestamped lines, auto-scrolls, caps at 100 KB (trims to last 50 KB). Exportable via "Export Logs" button to `%PROGRAMDATA%\KVM-Drivers\kvmlogs.txt`.

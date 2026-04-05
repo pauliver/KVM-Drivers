@@ -76,14 +76,16 @@ build\Release\
 ### User-Data Paths (Runtime)
 
 ```
-%LOCALAPPDATA%\KVM-Drivers\
-├── settings.json              # Persisted tray settings
+%PROGRAMDATA%\KVM-Drivers\
+├── settings.json              # Persisted tray settings (readable by LocalService)
 ├── trusted_clients.txt        # Approved remote client IPs + expiry
 ├── audit_log.csv              # Per-connection ETW audit trail
 └── pending_approvals\         # File-IPC between C++ servers and C# tray
     ├── <UUID>.request         # Written by C++ server for new clients
     └── <UUID>.result          # Written by C# tray with decision
 ```
+
+> All shared runtime state is stored under `%PROGRAMDATA%` (`C:\ProgramData\KVM-Drivers\`) so that `KVMService` running as `NT AUTHORITY\LocalService` and the tray running as the interactive user both resolve to the same directory.
 
 ## Installing Drivers
 
@@ -306,9 +308,9 @@ test_harness.exe  # Will show if using driver or SendInput fallback
 | VNC authentication fails | Reset VNC password in tray app Settings → VNC Server |
 | WebSocket disconnects | Check firewall rules for port 8443 |
 | VNC AnonTLS fails | Ensure Settings → VNC Security → Enable AnonTLS is checked; cert is auto-created |
-| Connection approval dialog doesn't appear | Ensure KVMTray.exe is running; check `%LOCALAPPDATA%\KVM-Drivers\pending_approvals\` |
+| Connection approval dialog doesn't appear | Ensure KVMTray.exe is running; check `%PROGRAMDATA%\KVM-Drivers\pending_approvals\` |
 | Remote client rejected silently | Check IP allowlist in Settings — empty = allow all |
-| Trusted client not remembered | Check `%LOCALAPPDATA%\KVM-Drivers\trusted_clients.txt` exists and is not expired |
+| Trusted client not remembered | Check `%PROGRAMDATA%\KVM-Drivers\trusted_clients.txt` exists and is not expired |
 
 ### Diagnostics Tab
 

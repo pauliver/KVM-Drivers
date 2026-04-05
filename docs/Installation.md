@@ -299,10 +299,12 @@ Remove-Item "$env:LOCALAPPDATA\KVM-Drivers" -Recurse -Force
 
 | Path | Contents |
 |------|----------|
-| `%LOCALAPPDATA%\KVM-Drivers\settings.json` | Tray settings (ports, auth, driver flags) — read by both tray and service at startup |
-| `%LOCALAPPDATA%\KVM-Drivers\trusted_clients.txt` | Approved remote client IPs with expiry timestamps (one per line: `<IP> <epoch>`) |
-| `%LOCALAPPDATA%\KVM-Drivers\audit_log.csv` | Per-connection ETW audit trail (Connected, Disconnected, AuthFailed, RateLimited events) |
-| `%LOCALAPPDATA%\KVM-Drivers\pending_approvals\` | File-based IPC between C++ servers and the C# tray; `<UUID>.request` written by server, `<UUID>.result` written by tray |
-| `%LOCALAPPDATA%\KVM-Drivers\settings.json.backup` | Automatic backup of settings before each save |
+| `%PROGRAMDATA%\KVM-Drivers\settings.json` | Tray settings (ports, auth, driver flags) — read by both tray and service at startup |
+| `%PROGRAMDATA%\KVM-Drivers\trusted_clients.txt` | Approved remote client IPs with expiry timestamps (one per line: `<IP> <epoch>`) |
+| `%PROGRAMDATA%\KVM-Drivers\audit_log.csv` | Per-connection ETW audit trail (Connected, Disconnected, AuthFailed, RateLimited events) |
+| `%PROGRAMDATA%\KVM-Drivers\pending_approvals\` | File-based IPC between C++ servers and C# tray; `<UUID>.request` written by server, `<UUID>.result` written by tray |
+| `%PROGRAMDATA%\KVM-Drivers\settings.json.backup` | Automatic backup of settings before each save |
 | `<ExeDir>\webclient\index.html` | Web client HTML (also searched at `<ExeDir>\index.html` and up to 6 parent dirs) |
 | `<ExeDir>\openh264.dll` | Optional: Cisco OpenH264 software encoder (drop alongside `KVMService.exe` to activate H.264) |
+
+> **Note — why PROGRAMDATA?** `KVMService` runs as `NT AUTHORITY\LocalService` whose `%LOCALAPPDATA%` resolves to `C:\Windows\ServiceProfiles\LocalService\AppData\Local` — a different path from the interactive user's `%LOCALAPPDATA%`. All shared runtime files are stored in `%PROGRAMDATA%\KVM-Drivers\` (`C:\ProgramData\KVM-Drivers\`) which is accessible to every account.
